@@ -17,7 +17,8 @@ const offer = {
   id: 123, gpu_name: 'RTX 4090', num_gpus: 1, cpu_cores_effective: 8,
   cpu_ram: 32768, gpu_ram: 24576, disk_space: 100, dph_total: 0.5,
   storage_cost: 0.5, inet_down_cost: 0.005, inet_up_cost: 0.005,
-  reliability: 0.995, verified: true, rentable: true
+  reliability: 0.995, verified: true, rentable: true,
+  cpu_arch: 'amd64', cuda_max_good: 12.4, direct_port_count: 1
 };
 
 function context(root = '/unused'): ComputeContext {

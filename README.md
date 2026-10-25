@@ -142,10 +142,15 @@ chmod 600 ~/.ssh/paper2_vast
 `pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime`.
 
 До Jev код фильтрует фактические предложения по CPU/RAM/VRAM/disk, надёжности,
-verified/rentable и бюджетам. `dph_total` учитывается один раз как all-in тариф
+verified/rentable, архитектуре amd64, CUDA ≥ 12.4, доступности direct SSH и бюджетам.
+Неизвестные параметры совместимости отклоняются. `dph_total` учитывается один раз как all-in тариф
 заданного `allocated_storage`. Оценка содержит резерв setup/экспорта и сети.
 Выбранное предложение перепроверяется перед созданием; увеличение утверждённого
 тарифа требует нового выбора. Платный запуск — только после отдельного approval.
+Фиксированный образ опубликован только для Linux/amd64:
+[метаданные Docker Hub](https://hub.docker.com/v2/repositories/pytorch/pytorch/tags/2.4.0-cuda12.4-cudnn9-runtime).
+Проверка CUDA использует поле API `cuda_max_good` — это
+[реальное имя CLI-алиаса `cuda_vers`](https://github.com/vast-ai/vast-cli/blob/master/vast.py#L1035-L1037).
 
 ### Whisper: русский голосовой ввод
 
