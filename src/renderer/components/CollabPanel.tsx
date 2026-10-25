@@ -45,7 +45,7 @@ export function CollabPanel({ api, onClose }: { api: NonNullable<AppAPI["collab"
     } catch { setError("Could not copy. Select the link and copy it manually."); }
   };
   return <dialog ref={dialog} className="collab-dialog" aria-labelledby="collab-title" onCancel={onClose} onClose={onClose}>
-    <header className="collab-heading"><span className="eyebrow">WORKSPACE / COLLAB</span><button className="collab-close" onClick={onClose} aria-label="Close sharing">×</button></header>
+    <header className="collab-heading"><span className="eyebrow">METHODIY AI / COLLAB</span><button className="collab-close" onClick={onClose} aria-label="Close sharing">×</button></header>
     <div className="collab-intro"><span className="collab-device"><PhoneGlyph /></span><h1 id="collab-title">Continue on another device.</h1><p>The same paper, conversation and evidence.<br />Your computer keeps the experiment running.</p></div>
     {error && <p className="collab-error" role="alert">{error}</p>}
     {busy && !status ? <p className="collab-loading" role="status">Checking workspace access…</p> : status?.running ? <>

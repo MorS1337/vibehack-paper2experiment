@@ -238,8 +238,12 @@ blockquote {
   user-select: none;
 }
 .brand-mark {
-  font-size: 19px;
-  color: var(--accent);
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  background: var(--accent);
+  mask: url("/methodiy-mark.svg") center / contain no-repeat;
 }
 .new-session-button {
   text-align: left;
@@ -388,7 +392,14 @@ blockquote {
   font-size: 13px;
   opacity: 0.65;
 }
-.workspace-tabs .paper-toggle[aria-pressed="true"] {
+.heading-actions .paper-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.heading-actions .paper-toggle[aria-pressed="true"] {
   color: var(--accent);
 }
 .evidence-mark {
@@ -2140,4 +2151,14 @@ blockquote {
   .collab-connect-body h1 { font-size: 27px; }
   .collab-connect form > input { font-size: 16px; }
   .collab-connect-footer { padding: 18px 20px; }
+}
+
+/* PDF.js text measurement uses a hidden body canvas; keep it out of layout. */
+.hiddenCanvasElement {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  display: none;
 }

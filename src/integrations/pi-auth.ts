@@ -73,7 +73,7 @@ export class PiAuth {
           if (login.controller.signal.aborted) return;
           login.state.notices = [...login.state.notices.slice(-19), structuredClone(notice) as PiLoginNotice];
         }
-      }, { agentName: 'Paper2Experiment', getDeviceId: () => deviceId! });
+      }, { agentName: 'Methodiy AI', getDeviceId: () => deviceId! });
       login.state.status = 'completed';
     } catch {
       // Provider exceptions may contain entered secrets or token responses. Never forward them.

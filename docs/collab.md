@@ -79,25 +79,31 @@ OMP session protocol, browser tool cards и публичный relay не коп
 
 ## Дизайн и интеграция paper-first
 
-Collab основан на `feat/paper-first-research-workspace` и использует её
+Collab основан на `feat/paper-first-research-workspace` (Methodiy AI) и использует её
 типографику, цветовые токены и автоматическую светлую/тёмную тему. На телефоне
 список экспериментов открывается в боковом меню, вкладки прокручиваются,
 PDF и рабочая область показываются по очереди. Desktop сохраняет split view.
-Диалог подключения, QR и страница ввода ссылки оформлены в том же стиле.
+Страница входа и диалог подключения используют название Methodiy AI и общий знак M.
+Вкладки Research / Protocol / Evidence и отдельная кнопка Paper совпадают
+с desktop, включая клавиатурные сочетания. Диалог подключения, QR и страница
+ввода ссылки оформлены в том же стиле.
 Браузер использует новые `importPaper`, `setBrief`, `conversation`, `sendMessage`
 и `artifactPreview`; отдельной копии старого UI нет.
 
 ## Проверки 25 октября 2026
 
 - Production build/typecheck прошли.
-- Node 24.22.1: полный suite — 58 passed, 1 skipped (Linux-only watchdog).
+- Node 24.22.1: полный suite — 63 passed, 1 skipped (Linux-only watchdog).
   Все 9 Collab-тестов прошли: реальные HTTP-запросы, права control/view,
   загрузка и авторизованное чтение PDF, разговор и RPC paper-first,
   восстановление после обрыва, отзыв/expiry, скачивание артефактов и tunnel child.
 - Реальный локальный Python smoke: вычисления, воспроизводимость, история,
   отмена и таймаут; без LLM/Jev/Vast inference и платной аренды.
 - В изолированной сборке Electron и браузере 390×844 проверены подключение,
-  импорт реального arXiv PDF, его отрисовка и переход к research brief.
+  импорт реального arXiv PDF, его отрисовка, переход к research brief,
+  ребрендинг Methodiy AI и расположение Paper справа от трёх вкладок.
+  Скрытый измерительный canvas PDF.js исключён из потока: он больше не сдвигает
+  верхнюю панель после открытия статьи.
   Проверки на физическом телефоне не было.
 - `npm audit --omit=dev`: 1 high и 4 low в DOMPurify/KaTeX и зависимых пакетах,
   унаследованных без изменения версий из paper-first. Обновление этих общих

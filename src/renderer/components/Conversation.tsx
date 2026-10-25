@@ -84,6 +84,7 @@ function Elapsed({
 const toolLabels: Record<string, string> = {
   get_experiment: "Review research brief",
   read_source: "Read the paper",
+  web_search: "Search the web",
   propose_plan: "Propose protocol",
   read: "Inspect workspace",
   write: "Write implementation",
@@ -124,7 +125,9 @@ export const ToolBlock = memo(function ToolBlock({
           ? "Awaiting scientific review"
           : block.tool === "read_source"
             ? `Pages ${args.first ?? ""}–${args.last ?? ""}`
-            : "";
+            : block.tool === "web_search" && typeof args.query === "string"
+              ? args.query
+              : "";
   const file = typeof output.artifact === "string" ? output.artifact : null;
   return (
     <div className={`tool-block tool-${block.state}`}>

@@ -20,7 +20,7 @@ export function CollabConnect({ children }: { children: (api: AppAPI) => ReactNo
   if (api) return children(api);
   const submit = (event: FormEvent) => { event.preventDefault(); void connect(link); };
   return <main className="collab-connect">
-    <header className="collab-connect-brand"><span className="brand-mark">p₂</span><span>paper2experiment</span><span className="collab-brand-divider">/</span><span className="muted">collab</span></header>
+    <header className="collab-connect-brand"><span className="brand-mark" aria-hidden="true" /><span>Methodiy AI</span><span className="collab-brand-divider">/</span><span className="muted">collab</span></header>
     <section className="collab-connect-body">
       <span className="collab-device"><PhoneGlyph /></span><span className="eyebrow">YOUR RESEARCH, CONTINUED</span>
       <h1>Join your workspace.</h1><p>Pick up the paper, conversation and evidence<br />right where you left them.</p>
@@ -31,7 +31,7 @@ export function CollabConnect({ children }: { children: (api: AppAPI) => ReactNo
         <button type="submit" className="primary-button" disabled={busy}>{busy ? "Connecting…" : "Connect to workspace"}<span aria-hidden="true">↗</span></button>
       </form>
       <div className="collab-connect-help"><span>01</span><p>Open <strong>Collab</strong> in the desktop workspace.<br />Scan its QR code or paste the connection link here.</p></div>
-      <p className="collab-fineprint">Runs stay on your computer. Keep Paper2Experiment open.<br />A connection link grants access to your workspace.</p>
+      <p className="collab-fineprint">Runs stay on your computer. Keep Methodiy AI open.<br />A connection link grants access to your workspace.</p>
     </section>
     <footer className="collab-connect-footer"><span>LOCAL COMPUTE / SHARED CONTEXT</span><span>Paper → protocol → evidence</span></footer>
   </main>;

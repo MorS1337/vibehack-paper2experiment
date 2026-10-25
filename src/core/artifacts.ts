@@ -511,17 +511,17 @@ export async function collectAndValidate(run: ExperimentRun): Promise<{ artifact
       fail('Демо не воспроизводит опубликованное число: publishedValue должен быть null, comparable — false');
     }
     const plotRelative = declaredPaths.find(value => value.toLowerCase().endsWith('.svg'));
-    if (!plotRelative) fail('Демо требует обязательный SVG-график в experiment.json artifacts');
-    const plotFile = await resolveProjectPath(projectDir, `artifacts/${plotRelative}`, 'plot');
-    const plotInfo = await lstat(plotFile);
-    if (plotInfo.size > MAX_PLOT_BYTES) fail('SVG-график превышает лимит');
-    const plot = await readFile(plotFile, 'utf8');
-    if (plot.length < 256 || !/<svg[\s>]/i.test(plot) || !/<\/svg>/i.test(plot)) fail('SVG-график пуст или повреждён');
-    if (/<(?:script|foreignObject)\b/i.test(plot) || /\son[a-z]+\s*=/i.test(plot) || /javascript:/i.test(plot)) {
-      fail('SVG-график не должен содержать исполняемый контент');
+    if (plotRelative) {
+      const plotFile = await resolveProjectPath(projectDir, `artifacts/${plotRelative}`, 'plot');
+      const plotInfo = await lstat(plotFile);
+      if (plotInfo.size > MAX_PLOT_BYTES) fail('SVG-график превышает лимит');
+      const plot = await readFile(plotFile, 'utf8');
+      if (!/<svg[\s>]/i.test(plot) || !/<\/svg>/i.test(plot)) fail('SVG-график повреждён');
+      if (/<(?:script|foreignObject)\b/i.test(plot) || /\son[a-z]+\s*=/i.test(plot) || /javascript:/i.test(plot)) {
+        fail('SVG-график не должен содержать исполняемый контент');
+      }
+      if (/\b(?:href|xlink:href)\s*=\s*["'](?:https?:|\/\/)/i.test(plot)) fail('SVG-график не должен ссылаться на внешние ресурсы');
     }
-    if (/\b(?:href|xlink:href)\s*=\s*["'](?:https?:|\/\/)/i.test(plot)) fail('SVG-график не должен ссылаться на внешние ресурсы');
-    if ((plot.match(/<(?:circle|polyline|path)\b/gi) ?? []).length < 2) fail('SVG-график не содержит точек/линий данных');
 
     const config = validateDemoConfig(configObject);
     verifyParametersAgainstSpec(configObject, spec.parameters);

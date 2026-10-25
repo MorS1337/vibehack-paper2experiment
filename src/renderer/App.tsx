@@ -35,14 +35,13 @@ import "./styles.css";
 
 type View = "chat" | "plan" | "files" | "settings" | "new";
 const views: {
-  id: "chat" | "plan" | "paper" | "files";
+  id: "chat" | "plan" | "files";
   label: string;
   shortcut: number;
 }[] = [
   { id: "chat", label: "Research", shortcut: 1 },
   { id: "plan", label: "Protocol", shortcut: 2 },
-  { id: "paper", label: "Paper", shortcut: 3 },
-  { id: "files", label: "Evidence", shortcut: 4 },
+  { id: "files", label: "Evidence", shortcut: 3 },
 ];
 
 function mergeBlocks(
@@ -551,21 +550,20 @@ function AppShell({ api }: { api: AppAPI }) {
       }
       if (
         (event.metaKey || event.ctrlKey) &&
-        ["1", "2", "3", "4", "5"].includes(event.key)
+        ["1", "2", "3", "5"].includes(event.key)
       ) {
+        if (showNew && event.key !== "5") return;
         event.preventDefault();
-        if (event.key === "3") setPaperOpen((previous) => !previous);
-        else
-          setView(
-            (
-              {
-                "1": "chat",
-                "2": "plan",
-                "4": "files",
-                "5": "settings",
-              } as Record<string, View>
-            )[event.key],
-          );
+        setView(
+          (
+            {
+              "1": "chat",
+              "2": "plan",
+              "3": "files",
+              "5": "settings",
+            } as Record<string, View>
+          )[event.key],
+        );
       }
       if (!viewOnly && event.key === "Escape" && active && run) {
         event.preventDefault();
@@ -577,7 +575,7 @@ function AppShell({ api }: { api: AppAPI }) {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [api, active, run, refresh, viewOnly, navOpen]);
+  }, [api, active, run, refresh, showNew, viewOnly, navOpen]);
   const hasPaper = !!paperRun?.source && view !== "settings";
   const splitPaper = hasPaper && paperOpen;
   return (
@@ -587,8 +585,8 @@ function AppShell({ api }: { api: AppAPI }) {
         {showCollab && api.collab && <CollabPanel api={api.collab} onClose={() => setShowCollab(false)} />}
         <aside className="vertical-rail" aria-label="Workspace navigation">
           <div className="rail-brand">
-            <span className="brand-mark">p₂</span>
-            <span>paper2experiment</span>
+            <span className="brand-mark" aria-hidden="true" />
+            <span>Methodiy AI</span>
           </div>
           <button
             className={`new-session-button${view === "new" ? " selected" : ""}`}
@@ -685,36 +683,11 @@ function AppShell({ api }: { api: AppAPI }) {
                   <button
                     key={item.id}
                     type="button"
-                    className={
-                      item.id === "paper"
-                        ? "paper-toggle"
-                        : view === item.id
-                          ? "is-current"
-                          : ""
-                    }
-                    aria-current={
-                      item.id !== "paper" && view === item.id
-                        ? "page"
-                        : undefined
-                    }
-                    aria-pressed={item.id === "paper" ? paperOpen : undefined}
-                    disabled={item.id === "paper" && !run?.source}
-                    title={
-                      item.id === "paper"
-                        ? `${paperOpen ? "Hide" : "Show"} source PDF · ⌘3`
-                        : `${item.label} · ⌘${item.shortcut}`
-                    }
-                    onClick={() => {
-                      if (item.id === "paper")
-                        setPaperOpen((previous) => !previous);
-                      else setView(item.id);
-                    }}
+                    className={view === item.id ? "is-current" : ""}
+                    aria-current={view === item.id ? "page" : undefined}
+                    title={`${item.label} · ⌘${item.shortcut}`}
+                    onClick={() => setView(item.id)}
                   >
-                    {item.id === "paper" ? (
-                      <span className="paper-toggle-mark" aria-hidden="true">
-                        ▤
-                      </span>
-                    ) : null}
                     {item.label}
                     {item.id === "plan" && run?.spec ? (
                       <span className="tab-detail">v{run.planVersion}</span>
@@ -732,27 +705,31 @@ function AppShell({ api }: { api: AppAPI }) {
             <div className="heading-actions">
               {api.collab && <button className="collab-trigger" onClick={() => setShowCollab(true)}><PhoneGlyph /> Collab</button>}
               {api.remote && <div className={`collab-connection is-${connection}`} role="status" title={connection === 'connected' ? `Live workspace · ${viewOnly ? 'view only' : 'control'}` : connection === 'expired' ? 'This connection link expired or was revoked. Open a new link from the desktop.' : 'Reconnecting to workspace…'}><span className={`session-dot${connection === 'connected' ? ' is-complete' : ''}`} /><span>{connection === 'connected' ? viewOnly ? 'View only' : 'Control' : connection === 'expired' ? 'Expired' : 'Reconnecting'}</span><button onClick={api.disconnect} aria-label="Disconnect from workspace" title="Disconnect">↗</button></div>}
-              {showNew ? (
-                hasPaper ? (
-                  <button
-                    type="button"
-                    className="quiet-button"
-                    onClick={() => setPaperOpen((previous) => !previous)}
-                    aria-pressed={paperOpen}
-                  >
-                    {paperOpen ? "Hide paper" : "Show paper"} ▤
-                  </button>
-                ) : (
-                  <span className="header-state">
-                    {newPaper?.status === "importing"
-                      ? "Importing source…"
-                      : "Source first"}
-                  </span>
-                )
-              ) : run && view !== "settings" ? (
+              {showNew && !hasPaper ? (
+                <span className="header-state">
+                  {newPaper?.status === "importing"
+                    ? "Importing source…"
+                    : "Source first"}
+                </span>
+              ) : run && !showNew && view !== "settings" ? (
                 <span className="header-state" title={run.title}>
                   {active ? "Working" : STATUS_META[run.status].label}
                 </span>
+              ) : null}
+              {hasPaper ? (
+                <button
+                  type="button"
+                  className="paper-toggle"
+                  aria-label={paperOpen ? "Hide paper" : "Show paper"}
+                  aria-pressed={paperOpen}
+                  title={paperOpen ? "Hide source PDF" : "Show source PDF"}
+                  onClick={() => setPaperOpen((previous) => !previous)}
+                >
+                  <span className="paper-toggle-mark" aria-hidden="true">
+                    ▤
+                  </span>
+                  Paper
+                </button>
               ) : null}
             </div>
           </header>
@@ -1157,7 +1134,7 @@ export function App() {
     <AppShell api={api} />
   ) : (
     <div className="bridge-unavailable">
-      <h1>Open Paper2Experiment in Electron.</h1>
+      <h1>Open Methodiy AI in Electron.</h1>
       <p>The browser preview cannot access the research harness.</p>
       <code>npm run dev</code>
     </div>
