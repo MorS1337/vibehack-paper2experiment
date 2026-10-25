@@ -7,7 +7,7 @@ import { collectAndValidate } from '../src/core/artifacts.js';
 import { extractVerifiedTarMember, hashFile, parseExportInventory, validateExportPath } from '../src/compute/export.js';
 import { LocalBackend } from '../src/compute/local.js';
 import { assertConfigMatchesSpec, readProjectManifest } from '../src/compute/manifest.js';
-import { delay, isProcessAlive, runProcess } from '../src/compute/process.js';
+import { delay, executionEnv, isProcessAlive, runProcess } from '../src/compute/process.js';
 import { selectVastTargets, evaluateVastOffer } from '../src/compute/vast-offers.js';
 import { SpecSchema } from '../src/shared/types.js';
 import type { AppSettings, ComputeContext, ExperimentRun, ExperimentSpec } from '../src/shared/types.js';
@@ -238,7 +238,7 @@ test('manifest and frozen config reject traversal, symlinks and scientific param
 });
 
 test('LocalBackend executes a real project, streams logs and validates artifacts', { timeout: 120_000 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'p2e-local-ok-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'p2e local ok '));
   const spec = makeSpec();
   const run = baseRun(root, spec);
   const controller = new AbortController();
@@ -269,6 +269,13 @@ test('LocalBackend executes a real project, streams logs and validates artifacts
     assert.match(await readFile(path.join(project, 'stdout.log'), 'utf8'), /local-ok/);
     assert.ok(lines.some(line => line.includes('local-ok')), `streamLogs lines: ${lines.join(' | ')}`);
     assert.equal(await backend.getStatus(ctx), 'stopped');
+    if (process.platform !== 'win32') {
+      if (!run.command) throw new Error('No recorded rerun command');
+      await rm(path.join(project, 'artifacts/metrics.json'));
+      const repeated = await runProcess('/bin/sh', ['-c', run.command], { cwd: os.tmpdir(), timeoutMs: 15_000, env: executionEnv() });
+      assert.equal(repeated.exitCode, 0, repeated.stderr);
+      assert.equal(JSON.parse(await readFile(path.join(project, 'artifacts/metrics.json'), 'utf8')).value, 42);
+    }
     await backend.cleanup(ctx);
   } finally {
     unsubscribe();

@@ -9,6 +9,7 @@ import {
   executionEnv, isProcessAlive, isProcessGroupAlive, readFileTail, runProcess, startDetached,
   terminateProcessGroup, type DetachedExecution
 } from './process.js';
+import { shellQuote } from './ssh.js';
 
 const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 const VENV_TIMEOUT_MS = 5 * 60 * 1000;
@@ -103,7 +104,7 @@ export class LocalBackend implements ComputeBackend {
     await mkdir(artifactsDir, { recursive: true });
     const stdoutFile = path.join(project.projectDir, 'stdout.log');
     const stderrFile = path.join(project.projectDir, 'stderr.log');
-    const commandLine = `${venv} ${project.manifest.entryPoint} --config ${project.manifest.config}`;
+    const commandLine = `cd ${shellQuote(project.projectDir)} && ${shellQuote(venv)} ${shellQuote(project.manifest.entryPoint)} --config ${shellQuote(project.manifest.config)}`;
     await ctx.persist({ executionStarted: true, artifactsCollected: false, artifacts: [], metrics: undefined, verification: undefined });
     ctx.signal.throwIfAborted();
     const execution = await startDetached(venv, [project.manifest.entryPoint, '--config', project.manifest.config], project.projectDir, stdoutFile, stderrFile, ctx.signal);
