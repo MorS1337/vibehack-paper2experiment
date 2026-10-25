@@ -80,7 +80,7 @@ ipcMain.handle('p2e:choose', async (event, kind: string) => {
 });
 session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(contents === window?.webContents && permission === 'media' && details.requestingUrl.startsWith('paper2://app/') && 'mediaTypes' in details && details.mediaTypes?.every(type => type === 'audio') === true));
 session.defaultSession.setPermissionCheckHandler((contents, permission, origin) => contents === window?.webContents && permission === 'media' && origin.startsWith('paper2://app'));
-window = new BrowserWindow({ width: 1440, height: 940, minWidth: 900, minHeight: 640, title: 'Paper2Experiment', backgroundColor: '#171819', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'main', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+window = new BrowserWindow({ width: 1440, height: 940, minWidth: 900, minHeight: 640, title: 'Paper2Experiment', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 }, backgroundColor: '#171819', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'main', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
 window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.on('will-attach-webview', event => event.preventDefault());

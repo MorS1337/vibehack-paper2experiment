@@ -46,6 +46,8 @@ interface Props {
   onStart: (input: ExperimentInput) => Promise<void>;
   onReplace: () => void;
   passage: { page: number; quote: string } | null;
+  stage: "paper" | "brief";
+  onStageChange: (stage: "paper" | "brief") => void;
 }
 
 export function NewExperiment({
@@ -56,8 +58,9 @@ export function NewExperiment({
   onStart,
   onReplace,
   disabled,
+  stage,
+  onStageChange: setStage,
 }: Props) {
-  const [stage, setStage] = useState<"paper" | "brief">("paper");
   const [source, setSource] = useState(paper?.input.source ?? "");
   const [objective, setObjective] = useState("");
   const [context, setContext] = useState("");
@@ -136,14 +139,6 @@ export function NewExperiment({
   };
   return (
     <div className={`new-experiment intake-${stage}`}>
-      <ol className="intake-stages" aria-label="New experiment stages">
-        <li aria-current={stage === "paper" ? "step" : undefined}>
-          <span>01</span> The paper
-        </li>
-        <li aria-current={stage === "brief" ? "step" : undefined}>
-          <span>02</span> Research brief
-        </li>
-      </ol>
       {stage === "paper" ? (
         <>
           <ResearchField />

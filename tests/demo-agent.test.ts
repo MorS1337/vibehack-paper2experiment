@@ -37,7 +37,7 @@ test('an incompatible demo primary metric is rejected before protocol approval o
     assert.equal(run.planVersion, 0);
     assert.equal(run.spec, undefined);
     await harness.savePlan(run.id, spec);
-    assert.equal(run.spec?.metric.name, 'empirical_tail_probability');
+    assert.equal(store.get(run.id).spec?.metric.name, 'empirical_tail_probability');
     assert.equal(run.approvedPlanVersion, undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
