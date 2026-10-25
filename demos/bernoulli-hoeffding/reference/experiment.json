@@ -1,0 +1,6 @@
+{
+  "entryPoint": "main.py",
+  "config": "config.json",
+  "requirements": "requirements.txt",
+  "artifacts": ["metrics.json", "samples.csv", "plot.svg"]
+}

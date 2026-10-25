@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "title": "Bernoulli check of Hoeffding's one-sided inequality (independent implementation)",
+  "objective": "Simulate independent Bernoulli(p) samples at several sample sizes and compare the empirical one-sided tail probability with Hoeffding's finite-sample bound and with the exact binomial tail.",
+  "paperResult": "Hoeffding's inequality bounds the upper tail of a sum of independent bounded variables. For Xi in [0,1] and Xbar = (X1 + ... + Xn)/n, Pr[Xbar - E[Xbar] >= epsilon] <= exp(-2 n epsilon^2). For Bernoulli(p), E[Xbar] = p, so the demo compares the simulated frequency of successes/n - p >= epsilon against exp(-2 n epsilon^2) and the exact binomial tail. The source is an expository report that restates Hoeffding's theorem; no published numeric value from it is being reproduced.",
+  "sourceRefs": [
+    {
+      "page": 8,
+      "quote": "Hoeffding’s inequality provides an upper bound on the probability that the sum of independent random variables deviates from its expected value by more than a certain amount."
+    },
+    {
+      "page": 9,
+      "quote": "By adding them both up, we can obtain two-sided variant of this inequality"
+    }
+  ],
+  "data": {
+    "description": "No external dataset. For each sample size n, generate trials_per_n independent samples of n Bernoulli(p) draws at runtime from the fixed integer seed using a seeded deterministic pseudorandom generator. samples.csv records every trial's success count, so the primary metric can be recomputed from the data alone.",
+    "split": "None. Each row is one independent repetition; different n values use independent draws from the same seeded stream.",
+    "preprocessing": "None. Count successes in each sample; p and epsilon are the declared constants."
+  },
+  "method": "For each n in n_values, run trials_per_n repetitions. In repetition trial, draw exactly n Bernoulli(p) values with a deterministic seeded generator, count successes, and mark the one-sided event successes/n - p >= epsilon (integer threshold ceil(n*(p+epsilon)-1e-12)). The empirical tail probability is the fraction of marked repetitions. Compare it with Hoeffding's bound exp(-2*n*epsilon^2) and with the exact binomial upper tail at the same threshold. Report Monte Carlo standard error and the maximum empirical-minus-bound difference across all configured n.",
+  "baseline": "Hoeffding's analytic bound exp(-2*n*epsilon^2) and the exact one-sided binomial tail at the same integer threshold; both are computed without reading the simulated metric back.",
+  "parameters": {
+    "p": 0.5,
+    "epsilon": 0.08,
+    "n_values": [10, 20, 40, 80, 160],
+    "trials_per_n": 10000,
+    "seed": 20261025,
+    "primary_n": 160,
+    "tail_side": "greater"
+  },
+  "metric": {
+    "name": "empirical_tail_probability",
+    "computation": "At primary_n, count rows in samples.csv with successes >= ceil(n*(p+epsilon)-1e-12), divide by trials_per_n. Independently recompute the same value from the CSV counts; never read the metric back from metrics.json. Also report hoeffding_bound = exp(-2*n*epsilon^2), exact_binomial_tail_probability, their differences, Monte Carlo standard error, and max_empirical_minus_bound across n.",
+    "publishedValue": null,
+    "comparable": false
+  },
+  "requirements": {
+    "cpuCores": 1,
+    "ramGB": 1,
+    "gpu": false,
+    "vramGB": 0,
+    "diskGB": 1
+  },
+  "limits": {
+    "timeSeconds": 120,
+    "maxHourlyUSD": 0,
+    "maxTotalUSD": 0
+  },
+  "implementation": "independent",
+  "assumptions": [
+    "The cited arXiv report is an expository restatement of Hoeffding's 1963 theorem, not the source of the simulation. The simulation is an independent reimplementation, not author code.",
+    "Observations are independent and identically distributed Bernoulli(p) with known p; each repetition uses exactly n draws.",
+    "The tail event is one-sided: successes/n - p >= epsilon, using the integer threshold ceil(n*(p+epsilon)-1e-12) to avoid floating-point boundary ambiguity.",
+    "The Hoeffding bound applies to the true tail probability. The empirical fraction is a finite Monte Carlo estimate with reported standard error; an empirical value above the bound is not by itself a theorem violation.",
+    "The seed makes the reference baseline repeatable, but a single artifact set cannot prove that an arbitrary worker's generator was deterministic.",
+    "No published numeric value is reproduced and no claim of reproducing the paper's empirical results is made."
+  ],
+  "missing": [],
+  "demo": "bernoulli-hoeffding"
+}

@@ -1,0 +1,9 @@
+{
+  "p": 0.5,
+  "epsilon": 0.08,
+  "n_values": [10, 20, 40, 80, 160],
+  "trials_per_n": 10000,
+  "seed": 20261025,
+  "primary_n": 160,
+  "tail_side": "greater"
+}

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+release/
+out/
+coverage/
+*.tsbuildinfo
+
+# Local application state and secrets never belong in git.
+settings.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Generated demo outputs and fetched source PDFs.
+demos/bernoulli-hoeffding/reference/artifacts/
+demos/bernoulli-hoeffding/reference/.venv/
+demos/bernoulli-hoeffding/source/paper.pdf
+
+.DS_Store
+*.log

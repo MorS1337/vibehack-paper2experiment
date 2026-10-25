@@ -1,0 +1,24 @@
+{
+  "title": "Introduction to Concentration Inequalities",
+  "authors": ["Kumar Abhishek", "Sneha Maheshwari", "Sujit Gujar"],
+  "arxivId": "1910.02884v1",
+  "arxivAbstractUrl": "https://arxiv.org/abs/1910.02884v1",
+  "pdfUrl": "https://arxiv.org/pdf/1910.02884v1",
+  "retrievedAt": "2026-10-25",
+  "pdfBytes": 210241,
+  "pdfSha256": "ed604a4100b10e17139d1fc8eb05f617effd5cb5c30533e4c325b08e1d9cae93",
+  "relevantPages": "8-9 (Section 3.5 Hoeffding's Inequality)",
+  "license": "arXiv nonexclusive-distrib 1.0; the PDF is not vendored in this repository. Download with source/fetch-source.sh and review the license before redistribution.",
+  "originalReference": {
+    "citation": "Wassily Hoeffding, Probability Inequalities for Sums of Bounded Random Variables, Journal of the American Statistical Association 58(301), 1963, pp. 13-30",
+    "doi": "10.1080/01621459.1963.10500830",
+    "publicScan": {
+      "url": "https://www.cs.rpi.edu/academics/courses/spring06/random/hoefding.pdf",
+      "sha256": "3021bcc097ef23a99a84d0eef8dcce2fd835c71df79a105727d3e03f8f0b8930",
+      "bytes": 1451039,
+      "note": "Verified accessible on 2026-10-25. It is a page scan with no extractable text layer, so it is not importable as-is."
+    },
+    "note": "The 1963 article is the origin of the theorem. Public scanned copies have no usable text layer, so the app imports the text-extractable arXiv exposition instead. No numeric result from either source is reproduced."
+  },
+  "note": "The source was verified to contain the theorem statement and the quoted sentences on PDF pages 8 and 9. The demo is an independent simulation of the quoted theorem, not author code and not a reproduction of a published measurement."
+}
