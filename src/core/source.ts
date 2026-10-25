@@ -24,7 +24,7 @@ export function arxivPDF(source: string): URL {
 }
 async function download(url: URL, signal: AbortSignal): Promise<Uint8Array> {
   for (let redirects = 0; redirects < 5; redirects++) {
-    const response = await fetch(url, { signal, redirect: 'manual', headers: { 'User-Agent': 'Paper2Experiment/0.1 (research desktop)' } });
+    const response = await fetch(url, { signal, redirect: 'manual', headers: { 'User-Agent': 'MethodiyAI/0.1 (research desktop)' } });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       url = new URL(response.headers.get('location') ?? '', url);
       if (url.protocol !== 'https:' || !['arxiv.org', 'www.arxiv.org', 'export.arxiv.org'].includes(url.hostname)) throw new Error('Источник перенаправляет за пределы arXiv');

@@ -18,7 +18,6 @@ project/
   artifacts/
     metrics.json
     samples.csv
-    plot.svg
 ```
 
 `experiment.json`:
@@ -28,7 +27,7 @@ project/
   "entryPoint": "main.py",
   "config": "config.json",
   "requirements": "requirements.txt",
-  "artifacts": ["metrics.json", "samples.csv", "plot.svg"]
+  "artifacts": ["metrics.json", "samples.csv"]
 }
 ```
 
@@ -122,18 +121,19 @@ The verifier recomputes the primary metric and all derived numeric fields from
 both values. Do not round the JSON values aggressively; full double precision is
 expected.
 
-## `artifacts/plot.svg`
+## Plots are presentation, not a compute prerequisite
 
-A valid, non-scripted standalone SVG (at least 256 bytes, `<svg>` and
-`</svg>`) with at least two data marks or series (`circle`, `polyline`, or
-`path`). Show the empirical tail and Hoeffding/exact series as functions of `n`;
-readable labels are part of the user-facing task, but the verifier does not
-assert literal label words. Scripts, event-handler attributes, and external
-`href`/`xlink:href` resources are rejected.
+After computation the agent reads actual metrics and per-n values from the
+collected outputs and emits an inline fenced `svg` plot in its chat response.
+Python produces numbers and samples, not plotting code or a mandatory image.
+Label axes, units, scale, series and the numeric source. Do not invent samples or
+confuse a theoretical reference curve with measured points. SVG markup is saved
+with the conversation and can be downloaded from its figure.
 
-The reference plot is deliberately dependency-free. A worker may use matplotlib
-if it pins the dependency in `requirements.txt`, but stdlib-only is preferred so
-the demo runs offline after the source is obtained.
+An explicit export request may additionally declare a saved SVG artifact.
+Declared files must exist and pass the existing size and executable-content
+checks. An SVG export is not required for scientific verification, and visual
+geometry is not independently validated as numeric evidence.
 
 ## Logs and exit status
 

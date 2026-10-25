@@ -143,7 +143,7 @@ export function NewExperiment({
         <>
           <ResearchField />
           <div className="new-heading">
-            <span className="eyebrow">PAPER2EXPERIMENT</span>
+            <span className="eyebrow">METHODIY AI</span>
             <h1>Start with the paper.</h1>
             <p>
               First, bring in the source. Then tell us which claim to reproduce

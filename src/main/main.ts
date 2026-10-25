@@ -2,7 +2,13 @@ import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, session, uti
 import type { UtilityProcess, IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { mkdirSync } from 'node:fs';
 
+app.setName('Methodiy AI');
+// Product identity may change; the existing research and Chromium profile must not.
+const userData = path.join(app.getPath('appData'), 'paper2experiment');
+mkdirSync(userData, { recursive: true, mode: 0o700 });
+app.setPath('userData', userData);
 protocol.registerSchemesAsPrivileged([{ scheme: 'paper2', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 if (!app.requestSingleInstanceLock()) app.exit(0);
 let window: BrowserWindow | undefined;
@@ -23,6 +29,8 @@ function checkSender(event: IpcMainInvokeEvent): void {
 app.on('second-instance', () => { window?.show(); window?.focus(); });
 void app.whenReady().then(async () => {
 const rendererRoot = path.join(app.getAppPath(), 'dist', 'renderer');
+const icon = path.join(rendererRoot, 'methodiy-icon.png');
+if (process.platform === 'darwin') app.dock?.setIcon(icon);
 protocol.handle('paper2', async incoming => {
   const url = new URL(incoming.url);
   if (url.hostname !== 'app') return new Response('Forbidden', { status: 403 });
@@ -41,13 +49,13 @@ protocol.handle('paper2', async incoming => {
   headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'");
   return new Response(response.body, { status: response.status, headers });
 });
-worker = utilityProcess.fork(path.join(app.getAppPath(), 'dist', 'core', 'host.js'), [process.env.PAPER2_STATE_DIR || path.join(app.getPath('userData'), 'research')], { cwd: app.getAppPath(), serviceName: 'Paper2Experiment harness', stdio: 'pipe' });
+worker = utilityProcess.fork(path.join(app.getAppPath(), 'dist', 'core', 'host.js'), [process.env.PAPER2_STATE_DIR || path.join(app.getPath('userData'), 'research')], { cwd: app.getAppPath(), serviceName: 'Methodiy AI harness', stdio: 'pipe' });
 worker.stdout?.on('data', chunk => process.stdout.write(chunk));
 worker.stderr?.on('data', chunk => process.stderr.write(chunk));
 worker.on('message', message => {
   if (message.kind === 'event') { window?.webContents.send('p2e:event', message.event); return; }
   if (message.kind === 'conversation') { window?.webContents.send('p2e:conversation', message.update); return; }
-  if (message.kind === 'fatal') { console.error('Ошибка ядра Paper2Experiment:', message.error); return; }
+  if (message.kind === 'fatal') { console.error('Ошибка ядра Methodiy AI:', message.error); return; }
   const call = pending.get(message.id);
   if (call) { pending.delete(message.id); if (message.error) call.reject(new Error(message.error)); else call.resolve(message.result); }
 });
@@ -80,7 +88,7 @@ ipcMain.handle('p2e:choose', async (event, kind: string) => {
 });
 session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(contents === window?.webContents && permission === 'media' && details.requestingUrl.startsWith('paper2://app/') && 'mediaTypes' in details && details.mediaTypes?.every(type => type === 'audio') === true));
 session.defaultSession.setPermissionCheckHandler((contents, permission, origin) => contents === window?.webContents && permission === 'media' && origin.startsWith('paper2://app'));
-window = new BrowserWindow({ width: 1440, height: 940, minWidth: 900, minHeight: 640, title: 'Paper2Experiment', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 }, backgroundColor: '#171819', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'main', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+window = new BrowserWindow({ width: 1440, height: 940, minWidth: 900, minHeight: 640, title: 'Methodiy AI', icon, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 }, backgroundColor: '#171819', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'main', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
 window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.on('will-attach-webview', event => event.preventDefault());
