@@ -15,6 +15,7 @@ import {
   SettingsIcon
 } from './icons.js';
 import { Badge, Button, PathField, TextInput } from './ui.js';
+import { PiLogin } from './PiLogin.js';
 
 interface SettingsViewProps {
   api: AppAPI;
@@ -224,6 +225,13 @@ export function SettingsView({ api, snapshot, busy, onSave, onRefresh }: Setting
           })}
         </div>
       </section>
+      <PiLogin
+        api={api}
+        disabled={busy || locked}
+        onConnected={(provider, model) => { updateField('piProvider', provider); updateField('piModel', model); }}
+        onRefresh={onRefresh}
+      />
+
 
       <form className="card settings-form" onSubmit={handleSave}>
         <div className="card-head">
@@ -251,8 +259,8 @@ export function SettingsView({ api, snapshot, busy, onSave, onRefresh }: Setting
           <div>
             <strong>Ключи не хранятся в настройках</strong>
             <p>
-              Здесь нет полей для токенов, паролей или API-ключей. Авторизация настраивается в CLI и
-              переменных окружения провайдеров. Приложение не выводит значения секретов в ошибках.
+              Вход в Pi доступен выше; секрет передаётся только штатному потоку авторизации и хранится в Pi.
+              Остальные интеграции используют CLI и переменные окружения. Настройки эксперимента не содержат ключей.
             </p>
           </div>
         </div>

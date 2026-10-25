@@ -23,14 +23,22 @@ function checkSender(event: IpcMainInvokeEvent): void {
 app.on('second-instance', () => { window?.show(); window?.focus(); });
 void app.whenReady().then(async () => {
 const rendererRoot = path.join(app.getAppPath(), 'dist', 'renderer');
-protocol.handle('paper2', async request => {
-  const url = new URL(request.url);
+protocol.handle('paper2', async incoming => {
+  const url = new URL(incoming.url);
   if (url.hostname !== 'app') return new Response('Forbidden', { status: 403 });
+  const paper = url.pathname.match(/^\/paper\/([a-f0-9-]{36})\.pdf$/);
+  if (paper) {
+    try {
+      const source = await request('sourcePdfPath', paper[1]);
+      const response = await net.fetch(pathToFileURL(String(source)).toString());
+      return new Response(response.body, { status: response.status, headers: { 'Content-Type': 'application/pdf', 'Cache-Control': 'private, max-age=0, must-revalidate', 'X-Content-Type-Options': 'nosniff' } });
+    } catch { return new Response('Imported paper is unavailable or failed its integrity check', { status: 404 }); }
+  }
   const file = path.resolve(rendererRoot, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
   if (path.relative(rendererRoot, file).startsWith('..')) return new Response('Forbidden', { status: 403 });
   const response = await net.fetch(pathToFileURL(file).toString());
   const headers = new Headers(response.headers);
-  headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'");
+  headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'");
   return new Response(response.body, { status: response.status, headers });
 });
 worker = utilityProcess.fork(path.join(app.getAppPath(), 'dist', 'core', 'host.js'), [process.env.PAPER2_STATE_DIR || path.join(app.getPath('userData'), 'research')], { cwd: app.getAppPath(), serviceName: 'Paper2Experiment harness', stdio: 'pipe' });
@@ -38,6 +46,7 @@ worker.stdout?.on('data', chunk => process.stdout.write(chunk));
 worker.stderr?.on('data', chunk => process.stderr.write(chunk));
 worker.on('message', message => {
   if (message.kind === 'event') { window?.webContents.send('p2e:event', message.event); return; }
+  if (message.kind === 'conversation') { window?.webContents.send('p2e:conversation', message.update); return; }
   if (message.kind === 'fatal') { console.error('Ошибка ядра Paper2Experiment:', message.error); return; }
   const call = pending.get(message.id);
   if (call) { pending.delete(message.id); if (message.error) call.reject(new Error(message.error)); else call.resolve(message.result); }
@@ -47,7 +56,7 @@ worker.on('exit', code => {
   for (const call of pending.values()) call.reject(new Error(`Ядро завершилось (${code}); перезапустите приложение. Состояние сохранено на диске`)); pending.clear();
   if (!quitting) console.error(`Ядро завершилось: ${code}. Проверьте сохранённые инстансы Vast после перезапуска.`);
 });
-for (const method of ['snapshot', 'create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'cancelTranscription', 'events']) {
+for (const method of ['snapshot', 'create', 'importPaper', 'setBrief', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'cancelTranscription', 'events', 'piProviders', 'piLogin', 'piLoginState', 'piLoginRespond', 'piLoginCancel', 'sendMessage', 'conversation', 'artifactPreview']) {
   ipcMain.handle(`p2e:${method}`, (event, ...args) => { checkSender(event); return request(method, ...args); });
 }
 let microphonePermission: Promise<boolean> | undefined;
@@ -64,6 +73,18 @@ ipcMain.handle('p2e:requestMicrophoneAccess', async event => {
   throw new Error('Доступ к микрофону запрещён macOS. Откройте Системные настройки → Конфиденциальность и безопасность → Микрофон, разрешите доступ Electron (npm start) или Paper2Experiment и перезапустите приложение.');
 });
 ipcMain.handle('p2e:openFolder', async (event, id) => { checkSender(event); const folder = await request('folder', id); const error = await shell.openPath(String(folder)); if (error) throw new Error(error); });
+ipcMain.handle('p2e:openAuthLink', async (event, id, url) => {
+  checkSender(event);
+  const link = await request('authLink', id, url);
+  await shell.openExternal(String(link));
+});
+ipcMain.handle('p2e:openExternal', async (event, value: unknown) => {
+  checkSender(event);
+  if (typeof value !== 'string' || value.length > 16384) throw new Error('Invalid link');
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Only HTTPS links are allowed');
+  await shell.openExternal(url.href);
+});
 ipcMain.handle('p2e:choose', async (event, kind: string) => {
   checkSender(event);
   if (!['pdf', 'data', 'model', 'binary', 'key'].includes(kind)) throw new Error('Недопустимый тип выбора');
@@ -72,7 +93,7 @@ ipcMain.handle('p2e:choose', async (event, kind: string) => {
 });
 session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(contents === window?.webContents && permission === 'media' && details.isMainFrame && details.requestingUrl.startsWith('paper2://app/') && 'mediaTypes' in details && details.mediaTypes?.length === 1 && details.mediaTypes[0] === 'audio'));
 session.defaultSession.setPermissionCheckHandler((contents, permission, origin, details) => contents === window?.webContents && permission === 'media' && origin.replace(/\/$/, '') === 'paper2://app' && details.isMainFrame && details.mediaType === 'audio');
-window = new BrowserWindow({ width: 1480, height: 960, minWidth: 1080, minHeight: 700, title: 'Paper2Experiment', backgroundColor: '#f5f4ef', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'main', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+window = new BrowserWindow({ width: 1440, height: 940, minWidth: 900, minHeight: 640, title: 'Paper2Experiment', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 18 }, backgroundColor: '#171819', webPreferences: { preload: path.join(app.getAppPath(), 'dist', 'main', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
 window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.on('will-attach-webview', event => event.preventDefault());
