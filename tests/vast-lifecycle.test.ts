@@ -153,8 +153,12 @@ test('lost create response persists intent before dispatch and recovers the actu
   const base = await server(t, async (req, res, url) => {
     if (url.pathname === '/api/v0/ssh') { reply(res, 200, [{ id: 1, key: PUBLIC_KEY }]); return; }
     if (url.pathname === '/api/v0/bundles/') {
-      assert.equal((await body(req)).allocated_storage, vastSearchBody(ctx.spec).allocated_storage);
-      reply(res, 200, { offers: [offer] }); return;
+      const query = await body(req);
+      assert.equal(query.allocated_storage, vastSearchBody(ctx.spec).allocated_storage);
+      // The live marketplace resolves an ask via ask_contract_id; id returns no offers.
+      const filter = query.ask_contract_id;
+      const selected = filter !== null && typeof filter === 'object' && 'eq' in filter && filter.eq === offer.id;
+      reply(res, 200, { offers: selected ? [offer] : [] }); return;
     }
     if (url.pathname === '/api/v0/asks/123/') {
       creates++;
