@@ -33,12 +33,12 @@ test('start → stop → flush → transcript; repeated start and stop do not du
 test('permission denial is actionable; a stalled OS prompt times out and can be retried', async () => {
   const denied = setup({ permission: Promise.reject(new DOMException('denied', 'NotAllowedError')) });
   await denied.task.start();
-  assert.match(denied.task.state.error!, /Доступ.*запрещён.*Микрофон/);
+  assert.match(denied.task.state.error!, /Microphone access was denied.*Microphone/);
   const permission = Promise.withResolvers<void>();
   const s = setup({ permission: permission.promise, timeout: 10 });
   await s.task.start();
   assert.equal(s.task.state.phase, 'idle');
-  assert.match(s.task.state.error!, /за 0.01 с/);
+  assert.match(s.task.state.error!, /after 0.01s/);
   permission.resolve();
   await s.task.start();
   assert.equal(s.task.state.phase, 'recording');

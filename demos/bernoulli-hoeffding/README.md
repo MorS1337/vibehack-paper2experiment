@@ -108,13 +108,16 @@ Outputs:
 ```
 artifacts/samples.csv
 artifacts/metrics.json
-artifacts/plot.svg
 ```
 
 The command prints the per-$n$ comparison and the same numeric object written to
 `metrics.json`. The baseline is deterministic for the documented SplitMix64
 stream in `reference/main.py`; a worker may use another documented seeded PRNG
 as long as `samples.csv` satisfies the contract.
+
+The reference prints the per-n data to stdout but does not generate a plot.
+In the research workspace the agent renders plots directly as inline SVG from
+these actual outputs; Python plotting libraries and a saved image are unnecessary.
 
 ## What the verifier checks
 

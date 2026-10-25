@@ -20,13 +20,20 @@ import type {
   Snapshot,
 } from "../shared/types.js";
 import { getApi, errorMessage } from "./lib/api.js";
+import { CollabConnect } from "./components/CollabConnect.js";
+import { CollabPanel, PhoneGlyph } from "./components/CollabPanel.js";
 import { SettingsView } from "./components/SettingsView.js";
 import { Conversation, FilePreview } from "./components/Conversation.js";
 import { NewExperiment } from "./components/NewExperiment.js";
 import { RichMessage } from "./components/RichMessage.js";
+import {
+  DictationControl,
+  DictationError,
+} from "./components/DictationControl.js";
+import { useVoiceTask } from "./hooks/useVoiceTask.js";
+import { insertTranscript } from "./lib/dictation.js";
 import { STATUS_META } from "./lib/status.js";
 import { PaperContext } from "./lib/paper-context.js";
-import { useVoiceTask } from "./hooks/useVoiceTask.js";
 
 // PDF rendering is a browser-only, on-demand surface, not part of the initial UI bundle.
 const PaperPane = lazy(() => import("./components/PaperPane.js"));
@@ -34,14 +41,13 @@ import "./styles.css";
 
 type View = "chat" | "plan" | "files" | "settings" | "new";
 const views: {
-  id: "chat" | "plan" | "paper" | "files";
+  id: "chat" | "plan" | "files";
   label: string;
   shortcut: number;
 }[] = [
   { id: "chat", label: "Research", shortcut: 1 },
   { id: "plan", label: "Protocol", shortcut: 2 },
-  { id: "paper", label: "Paper", shortcut: 3 },
-  { id: "files", label: "Evidence", shortcut: 4 },
+  { id: "files", label: "Evidence", shortcut: 3 },
 ];
 
 function mergeBlocks(
@@ -210,6 +216,8 @@ function PlanView({
 
 function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
   const [file, setFile] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState("");
+  const [downloading, setDownloading] = useState(false);
   useEffect(() => setFile(null), [run.id]);
   return (
     <div className="inspector-document">
@@ -270,6 +278,8 @@ function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
               </button>
             ))}
         </div>
+        {file && api.downloadArtifact && run.artifacts.some(item => item.path === file) && <button className="remote-file-download" disabled={downloading} onClick={() => { setDownloading(true); setDownloadError(""); void api.downloadArtifact!(run.id, file).catch(cause => setDownloadError(errorMessage(cause))).finally(() => setDownloading(false)); }}>{downloading ? "Downloading…" : "Download file ↓"}</button>}
+        {downloadError && <p className="error-text" role="alert">{downloadError}</p>}
         {file ? (
           <FilePreview key={file} api={api} run={run} file={file} />
         ) : null}
@@ -291,6 +301,11 @@ function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
 }
 
 function AppShell({ api }: { api: AppAPI }) {
+  const [showCollab, setShowCollab] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  const [connection, setConnection] = useState<'connected' | 'reconnecting' | 'expired'>('connected');
+  const viewOnly = api.access === 'view';
+  useEffect(() => api.connection?.(setConnection), [api]);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("chat");
@@ -316,12 +331,19 @@ function AppShell({ api }: { api: AppAPI }) {
   const [operation, setOperation] = useState(false);
   const [draft, setDraft] = useState("");
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
-  const selected = useRef(selectedId);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const voice = useVoiceTask(api, (text) =>
-    setDraft((previous) => previous ? `${previous}\n${text}` : text),
-  );
-  useEffect(() => { voice.cancel(); }, [selectedId, view, voice.cancel]);
+  const voice = useVoiceTask(api, (transcript) => {
+    // Insert at the caret: dictation edits text, it never sends it.
+    const field = textarea.current;
+    const start = field?.selectionStart ?? draft.length;
+    const end = field?.selectionEnd ?? start;
+    setDraft(
+      (current) => insertTranscript(current, start, end, transcript).text,
+    );
+    requestAnimationFrame(() => textarea.current?.focus());
+  });
+  const selected = useRef(selectedId);
+  useEffect(() => { voice.cancel(); }, [selectedId, view, viewOnly, voice.cancel]);
   selected.current = selectedId;
   const refresh = useCallback(async () => {
     const next = await api.snapshot();
@@ -340,6 +362,8 @@ function AppShell({ api }: { api: AppAPI }) {
   useEffect(() => {
     let timer: number | undefined;
     const stopEvents = api.onEvent((event) => {
+      const eventRun = event.runId || selected.current;
+      if (event.id === "sync" && eventRun) void api.events(eventRun).then(history => { if (selected.current === eventRun) setEvents(history); }).catch(cause => setError(errorMessage(cause)));
       if (selected.current === event.runId)
         setEvents((previous) => [...previous, event].slice(-500));
       timer ??= window.setTimeout(() => {
@@ -348,11 +372,11 @@ function AppShell({ api }: { api: AppAPI }) {
           .current()
           .catch((cause) => setError(errorMessage(cause)));
       }, 250);
-      if (event.type === "status" && selected.current === event.runId) {
+      if (event.type === "status" && eventRun && selected.current === eventRun) {
         void api
-          .conversation(event.runId)
+          .conversation(eventRun)
           .then((result) => {
-            if (selected.current === event.runId) {
+            if (selected.current === eventRun) {
               setBlocks((previous) => mergeBlocks(previous, result.blocks));
               setPage((current) => ({
                 ...result,
@@ -438,6 +462,8 @@ function AppShell({ api }: { api: AppAPI }) {
   );
   const paperNavigation = useMemo(() => ({ cite }), [cite]);
   const newExperiment = () => {
+    if (viewOnly) return;
+    setNavOpen(false);
     setDraftId(null);
     setIntakeStage("paper");
     setBriefPassage(null);
@@ -457,6 +483,7 @@ function AppShell({ api }: { api: AppAPI }) {
     requestAnimationFrame(() => textarea.current?.focus());
   };
   const perform = async (action: () => Promise<unknown>) => {
+    if (viewOnly) { setError("This connection is view-only."); return false; }
     setOperation(true);
     setError("");
     try {
@@ -471,14 +498,14 @@ function AppShell({ api }: { api: AppAPI }) {
     }
   };
   const approvePlan = () => {
-    if (run)
+    if (run && !viewOnly)
       void perform(() => api.execute(run.id)).then((ok) => {
         if (ok) setView("chat");
       });
   };
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!run || !draft.trim() || operation || otherActive || voice.phase !== "idle") return;
+    if (viewOnly || !run || !draft.trim() || operation || otherActive || voice.phase !== "idle") return;
     const text = draft;
     setDraft("");
     const ok = await perform(() => api.sendMessage(run.id, text, delivery));
@@ -501,6 +528,7 @@ function AppShell({ api }: { api: AppAPI }) {
     }
   };
   const importPaper = async (source: string) => {
+    if (viewOnly) throw new Error("This connection is view-only.");
     const imported = await api.importPaper(source);
     setDraftId(imported.id);
     setIntakeStage("paper");
@@ -511,12 +539,13 @@ function AppShell({ api }: { api: AppAPI }) {
     await refresh();
   };
   const startResearch = async (input: ExperimentInput) => {
+    if (viewOnly) throw new Error("This connection is view-only.");
     if (!newPaper?.source)
       throw new Error("Import a paper before providing the research brief.");
     try {
       await api.setBrief(newPaper.id, input);
-      setView("chat");
       await refresh();
+      setView("chat");
       if (input.agentMode === "pi")
         await api.sendMessage(newPaper.id, input.task, "followUp");
       else await api.plan(newPaper.id);
@@ -528,7 +557,14 @@ function AppShell({ api }: { api: AppAPI }) {
   };
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+      if (event.defaultPrevented) return;
+      if (event.key === "Escape" && voice.phase !== "idle") {
+        event.preventDefault();
+        voice.cancel();
+        return;
+      }
+      if (event.key === "Escape" && navOpen) { setNavOpen(false); return; }
+      if (!viewOnly && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         setDraftId(null);
         setIntakeStage("paper");
@@ -537,23 +573,22 @@ function AppShell({ api }: { api: AppAPI }) {
       }
       if (
         (event.metaKey || event.ctrlKey) &&
-        ["1", "2", "3", "4", "5"].includes(event.key)
+        ["1", "2", "3", "5"].includes(event.key)
       ) {
+        if (showNew && event.key !== "5") return;
         event.preventDefault();
-        if (event.key === "3") setPaperOpen((previous) => !previous);
-        else
-          setView(
-            (
-              {
-                "1": "chat",
-                "2": "plan",
-                "4": "files",
-                "5": "settings",
-              } as Record<string, View>
-            )[event.key],
-          );
+        setView(
+          (
+            {
+              "1": "chat",
+              "2": "plan",
+              "3": "files",
+              "5": "settings",
+            } as Record<string, View>
+          )[event.key],
+        );
       }
-      if (event.key === "Escape" && active && run) {
+      if (!viewOnly && event.key === "Escape" && active && run) {
         event.preventDefault();
         void api
           .cancel(run.id)
@@ -563,20 +598,23 @@ function AppShell({ api }: { api: AppAPI }) {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [api, active, run, refresh]);
+  }, [api, active, run, refresh, showNew, viewOnly, navOpen, voice.phase, voice.cancel]);
   const hasPaper = !!paperRun?.source && view !== "settings";
   const splitPaper = hasPaper && paperOpen;
   return (
     <PaperContext.Provider value={paperNavigation}>
-      <div className="harness-app">
+      <div className={`harness-app${api.remote ? " collab-remote" : ""}${navOpen ? " is-nav-open" : ""}`}>
+        {navOpen && <button className="mobile-nav-backdrop" aria-label="Close workspace navigation" onClick={() => setNavOpen(false)} />}
+        {showCollab && api.collab && <CollabPanel api={api.collab} onClose={() => setShowCollab(false)} />}
         <aside className="vertical-rail" aria-label="Workspace navigation">
           <div className="rail-brand">
-            <span className="brand-mark">p₂</span>
-            <span>paper2experiment</span>
+            <span className="brand-mark" aria-hidden="true" />
+            <span>Methodiy AI</span>
           </div>
           <button
             className={`new-session-button${view === "new" ? " selected" : ""}`}
             type="button"
+            disabled={viewOnly}
             onClick={newExperiment}
           >
             ＋ New experiment <kbd>⌘N</kbd>
@@ -589,6 +627,7 @@ function AppShell({ api }: { api: AppAPI }) {
                 type="button"
                 className={`session-tab${item.id === selectedId && (view !== "new" || item.id === draftId) ? " selected" : ""}`}
                 onClick={() => {
+                  setNavOpen(false);
                   setSelectedId(item.id);
                   if (!item.input.task) {
                     setDraftId(item.id);
@@ -628,6 +667,7 @@ function AppShell({ api }: { api: AppAPI }) {
         </aside>
         <main className="main-surface">
           <header className="workspace-heading">
+            <button className="mobile-nav-toggle" aria-label="Workspace navigation" aria-expanded={navOpen} onClick={() => setNavOpen(value => !value)}>☰</button>
             {view === "settings" ? (
               <span className="header-location">Settings</span>
             ) : showNew ? (
@@ -666,36 +706,11 @@ function AppShell({ api }: { api: AppAPI }) {
                   <button
                     key={item.id}
                     type="button"
-                    className={
-                      item.id === "paper"
-                        ? "paper-toggle"
-                        : view === item.id
-                          ? "is-current"
-                          : ""
-                    }
-                    aria-current={
-                      item.id !== "paper" && view === item.id
-                        ? "page"
-                        : undefined
-                    }
-                    aria-pressed={item.id === "paper" ? paperOpen : undefined}
-                    disabled={item.id === "paper" && !run?.source}
-                    title={
-                      item.id === "paper"
-                        ? `${paperOpen ? "Hide" : "Show"} source PDF · ⌘3`
-                        : `${item.label} · ⌘${item.shortcut}`
-                    }
-                    onClick={() => {
-                      if (item.id === "paper")
-                        setPaperOpen((previous) => !previous);
-                      else setView(item.id);
-                    }}
+                    className={view === item.id ? "is-current" : ""}
+                    aria-current={view === item.id ? "page" : undefined}
+                    title={`${item.label} · ⌘${item.shortcut}`}
+                    onClick={() => setView(item.id)}
                   >
-                    {item.id === "paper" ? (
-                      <span className="paper-toggle-mark" aria-hidden="true">
-                        ▤
-                      </span>
-                    ) : null}
                     {item.label}
                     {item.id === "plan" && run?.spec ? (
                       <span className="tab-detail">v{run.planVersion}</span>
@@ -711,27 +726,33 @@ function AppShell({ api }: { api: AppAPI }) {
               </nav>
             )}
             <div className="heading-actions">
-              {showNew ? (
-                hasPaper ? (
-                  <button
-                    type="button"
-                    className="quiet-button"
-                    onClick={() => setPaperOpen((previous) => !previous)}
-                    aria-pressed={paperOpen}
-                  >
-                    {paperOpen ? "Hide paper" : "Show paper"} ▤
-                  </button>
-                ) : (
-                  <span className="header-state">
-                    {newPaper?.status === "importing"
-                      ? "Importing source…"
-                      : "Source first"}
-                  </span>
-                )
-              ) : run && view !== "settings" ? (
+              {api.collab && <button className="collab-trigger" onClick={() => setShowCollab(true)}><PhoneGlyph /> Collab</button>}
+              {api.remote && <div className={`collab-connection is-${connection}`} role="status" title={connection === 'connected' ? `Live workspace · ${viewOnly ? 'view only' : 'control'}` : connection === 'expired' ? 'This connection link expired or was revoked. Open a new link from the desktop.' : 'Reconnecting to workspace…'}><span className={`session-dot${connection === 'connected' ? ' is-complete' : ''}`} /><span>{connection === 'connected' ? viewOnly ? 'View only' : 'Control' : connection === 'expired' ? 'Expired' : 'Reconnecting'}</span><button onClick={api.disconnect} aria-label="Disconnect from workspace" title="Disconnect">↗</button></div>}
+              {showNew && !hasPaper ? (
+                <span className="header-state">
+                  {newPaper?.status === "importing"
+                    ? "Importing source…"
+                    : "Source first"}
+                </span>
+              ) : run && !showNew && view !== "settings" ? (
                 <span className="header-state" title={run.title}>
                   {active ? "Working" : STATUS_META[run.status].label}
                 </span>
+              ) : null}
+              {hasPaper ? (
+                <button
+                  type="button"
+                  className="paper-toggle"
+                  aria-label={paperOpen ? "Hide paper" : "Show paper"}
+                  aria-pressed={paperOpen}
+                  title={paperOpen ? "Hide source PDF" : "Show source PDF"}
+                  onClick={() => setPaperOpen((previous) => !previous)}
+                >
+                  <span className="paper-toggle-mark" aria-hidden="true">
+                    ▤
+                  </span>
+                  Paper
+                </button>
               ) : null}
             </div>
           </header>
@@ -758,7 +779,7 @@ function AppShell({ api }: { api: AppAPI }) {
               <SettingsView
                 api={api}
                 snapshot={snapshot}
-                busy={operation}
+                busy={operation || viewOnly}
                 onSave={(settings: AppSettings) =>
                   perform(() => api.saveSettings(settings))
                 }
@@ -786,7 +807,7 @@ function AppShell({ api }: { api: AppAPI }) {
                       onImport={importPaper}
                       onStart={startResearch}
                       onReplace={newExperiment}
-                      disabled={!!snapshot?.activeId}
+                      disabled={viewOnly || !!snapshot?.activeId}
                     />
                   </div>
                 ) : null}
@@ -820,6 +841,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           </div>
                           <button
                             className="primary-button"
+                            disabled={viewOnly}
                             type="button"
                             onClick={() =>
                               void perform(() => api.approve(run.id))
@@ -853,7 +875,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           </span>
                           <button
                             type="button"
-                            disabled={active || operation}
+                            disabled={viewOnly || active || operation}
                             onClick={() =>
                               void perform(() => api.cleanup(run.id))
                             }
@@ -872,7 +894,7 @@ function AppShell({ api }: { api: AppAPI }) {
                               <span>{input.text}</span>
                               <button
                                 type="button"
-                                disabled={operation || otherActive}
+                                disabled={viewOnly || operation || otherActive}
                                 onClick={() =>
                                   void perform(() =>
                                     api.sendMessage(
@@ -907,8 +929,16 @@ function AppShell({ api }: { api: AppAPI }) {
                             onChange={(event) => setDraft(event.target.value)}
                             rows={2}
                             maxLength={30000}
-                            disabled={otherActive}
+                            disabled={viewOnly || otherActive}
                             onKeyDown={(event) => {
+                              if (
+                                event.key === "Escape" &&
+                                voice.phase !== "idle"
+                              ) {
+                                event.preventDefault();
+                                voice.cancel();
+                                return;
+                              }
                               if (
                                 event.key === "Enter" &&
                                 !event.shiftKey &&
@@ -919,8 +949,19 @@ function AppShell({ api }: { api: AppAPI }) {
                               }
                             }}
                           />
-                          {voice.error ? <p className="error-text" role="alert">{voice.error}</p> : null}
-                          {voice.phase !== "idle" ? <p role="status">{voice.phase === "requesting" ? "Requesting microphone…" : voice.phase === "transcribing" ? "Transcribing…" : `${voice.device} · ${voice.elapsed}s recorded · ${voice.remaining}s left`}</p> : null}
+                          <DictationControl
+                            state={voice}
+                            disabled={viewOnly || otherActive || operation}
+                            onStart={() => void voice.start()}
+                            onStop={() => void voice.stop()}
+                            onCancel={voice.cancel}
+                          />
+                          {voice.error ? (
+                            <DictationError
+                              message={voice.error}
+                              onDismiss={voice.clearError}
+                            />
+                          ) : null}
                           <div className="composer-footer">
                             <button
                               className="model-button"
@@ -932,14 +973,6 @@ function AppShell({ api }: { api: AppAPI }) {
                               {snapshot?.settings.piModel || "available model"}
                             </button>
                             <span className="composer-spacer" />
-                            <button
-                              type="button"
-                              disabled={otherActive || operation || voice.phase === "requesting" || voice.phase === "transcribing"}
-                              onClick={() => void (voice.phase === "recording" ? voice.stop() : voice.start())}
-                            >
-                              {voice.phase === "recording" ? "Stop recording" : "Dictate"}
-                            </button>
-                            {voice.phase !== "idle" ? <button type="button" onClick={voice.cancel}>Cancel dictation</button> : null}
                             {active ? (
                               <>
                                 <select
@@ -963,7 +996,7 @@ function AppShell({ api }: { api: AppAPI }) {
                                 <button
                                   className="stop-button"
                                   type="button"
-                                  disabled={operation}
+                                  disabled={viewOnly || operation}
                                   onClick={() =>
                                     void perform(() => api.cancel(run.id))
                                   }
@@ -980,7 +1013,7 @@ function AppShell({ api }: { api: AppAPI }) {
                               className="send-button"
                               type="submit"
                               disabled={
-                                !draft.trim() || operation || otherActive || voice.phase !== "idle"
+                                viewOnly || !draft.trim() || operation || otherActive || voice.phase !== "idle"
                               }
                               aria-label={
                                 active ? "Queue message" : "Send message"
@@ -997,13 +1030,13 @@ function AppShell({ api }: { api: AppAPI }) {
                           </span>
                           <button
                             type="button"
-                            disabled={active || operation}
+                            disabled={active || operation || (viewOnly && !run.spec)}
                             onClick={() => {
                               if (run.status === "completed") {
                                 setView("files");
                               } else if (run.spec) {
                                 setView("plan");
-                              } else {
+                              } else if (!viewOnly) {
                                 void perform(() => api.plan(run.id));
                               }
                             }}
@@ -1017,6 +1050,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           {active ? (
                             <button
                               type="button"
+                              disabled={viewOnly || operation}
                               onClick={() =>
                                 void perform(() => api.cancel(run.id))
                               }
@@ -1052,7 +1086,7 @@ function AppShell({ api }: { api: AppAPI }) {
                             setView("chat");
                             textarea.current?.focus();
                           }}
-                          disabled={operation || !!snapshot?.activeId}
+                          disabled={viewOnly || operation || !!snapshot?.activeId}
                         />
                       </div>
                     ) : null}
@@ -1121,6 +1155,7 @@ function AppShell({ api }: { api: AppAPI }) {
                     }
                   >
                     <PaperPane
+                      api={api}
                       key={paperRun.id}
                       run={paperRun}
                       page={paperPage}
@@ -1145,11 +1180,12 @@ function AppShell({ api }: { api: AppAPI }) {
 
 export function App() {
   const api = getApi();
+  if (!api && ["http:", "https:"].includes(window.location.protocol)) return <CollabConnect>{remote => <AppShell api={remote} />}</CollabConnect>;
   return api ? (
     <AppShell api={api} />
   ) : (
     <div className="bridge-unavailable">
-      <h1>Open Paper2Experiment in Electron.</h1>
+      <h1>Open Methodiy AI in Electron.</h1>
       <p>The browser preview cannot access the research harness.</p>
       <code>npm run dev</code>
     </div>

@@ -23,7 +23,7 @@ test('provider authentication failure is preserved by the persistent conversatio
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
     await writeFile(path.join(root, 'models.json'), JSON.stringify({ providers: {
-      'failure-test': { baseUrl: `http://127.0.0.1:${address.port}/v1`, api: 'openai-completions', apiKey: 'isolated-non-secret', models: [{ id: 'test-model', contextWindow: 128000, maxTokens: 1024 }] }
+      'failure-test': { baseUrl: `http://127.0.0.1:${address.port}/v1`, api: 'openai-completions', apiKey: 'isolated-non-secret', models: [{ id: 'test-model', input: ['text', 'image'], contextWindow: 128000, maxTokens: 1024 }] }
     } }));
     const store = new Store(path.join(root, 'state'));
     await store.load();

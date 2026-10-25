@@ -1,18 +1,29 @@
 import { Harness } from './harness.js';
 import { Store } from './store.js';
 import { z } from 'zod';
+import { readArtifactDownload } from './artifact-download.js';
 
 const port = process.parentPort;
-if (!port) throw new Error('Harness должен запускаться как Electron utility process');
+if (!port)
+  throw new Error("Harness должен запускаться как Electron utility process");
 const root = process.argv[2];
-if (!root) throw new Error('Не задана папка состояния');
+if (!root) throw new Error("Не задана папка состояния");
 const harness = new Harness(new Store(root));
 const idSchema = z.string().uuid();
 const ready = harness.initialize();
+// Desktop and phones share this queue so two editors cannot write the same plan version.
+let commands = Promise.resolve();
+const orderedMethods = new Set(['create', 'setBrief', 'plan', 'savePlan', 'execute', 'approve', 'cleanup', 'saveSettings']);
 harness.onEvent(event => port.postMessage({ kind: 'event', event }));
 harness.onConversation(update => port.postMessage({ kind: 'conversation', update }));
 port.on('message', async ({ data }: { data: { id: number; method: string; args: unknown[] } }) => {
   const { id, method, args } = data;
+  let release: (() => void) | undefined;
+  if (orderedMethods.has(method)) {
+    const previous = commands;
+    commands = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+  }
   try {
     await ready;
     let result: unknown;
@@ -45,10 +56,13 @@ port.on('message', async ({ data }: { data: { id: number; method: string; args: 
       case 'cancelTranscription': result = await harness.cancelTranscription(idSchema.parse(args[0])); break;
       case 'events': result = await harness.store.events(idSchema.parse(args[0])); break;
       case 'folder': result = harness.store.get(idSchema.parse(args[0])).dir; break;
+      case 'downloadArtifact': result = await readArtifactDownload(harness.store.get(idSchema.parse(args[0])), z.string().min(1).max(4096).parse(args[1])); break;
       case 'shutdown': result = await harness.shutdown(); break;
       default: throw new Error('Неизвестная операция');
     }
     port.postMessage({ kind: 'response', id, result });
+    if (['create', 'importPaper', 'setBrief', 'saveSettings'].includes(method)) port.postMessage({ kind: 'event', event: { id: `sync-${id}`, runId: '', at: new Date().toISOString(), type: 'status', message: 'Состояние обновлено' } });
   } catch (error) { port.postMessage({ kind: 'response', id, error: error instanceof Error ? error.message : String(error) }); }
+  finally { release?.(); }
 });
 ready.then(() => port.postMessage({ kind: 'ready' })).catch(error => port.postMessage({ kind: 'fatal', error: String(error) }));

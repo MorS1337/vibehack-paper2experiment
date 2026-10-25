@@ -17,7 +17,13 @@ const MathMarkdown = lazy(() => import("./MathMarkdown.js"));
 
 const SVG_LIMIT = 512 * 1024;
 
-export function safeSvg(source: string): string {
+interface SafeSvg {
+  markup: string;
+  title: string;
+  description: string;
+}
+
+export function safeSvg(source: string): SafeSvg {
   if (source.length > SVG_LIMIT || /<!DOCTYPE|<!ENTITY/i.test(source))
     throw new Error(
       "SVG is too large or contains a document/entity declaration",
@@ -99,12 +105,26 @@ export function safeSvg(source: string): string {
     (!root.hasAttribute("width") || !root.hasAttribute("height"))
   )
     root.setAttribute("viewBox", "0 0 800 400");
-  return new XMLSerializer().serializeToString(root);
+  return {
+    markup: new XMLSerializer().serializeToString(root),
+    title:
+      root
+        .querySelector(":scope > title")
+        ?.textContent?.replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 300) ?? "",
+    description:
+      root
+        .querySelector(":scope > desc")
+        ?.textContent?.replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 1600) ?? "",
+  };
 }
 
 export const SvgFigure = memo(function SvgFigure({
   source,
-  title = "Research figure",
+  title,
   artifact = false,
 }: {
   source: string;
@@ -123,24 +143,29 @@ export const SvgFigure = memo(function SvgFigure({
     try {
       const clean = safeSvg(source);
       return {
-        uri: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(clean)}`,
+        uri: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(clean.markup)}`,
+        title: clean.title,
+        description: clean.description,
         error: "",
       };
     } catch (error) {
       return {
         uri: "",
         error: error instanceof Error ? error.message : String(error),
+        title: "",
+        description: "",
       };
     }
   }, [source, themeVersion]);
+  const caption = title || prepared.title || "Research figure";
   return (
     <figure className="svg-figure">
       <figcaption>
         <span className="figure-caption">
           <span className="eyebrow">
-            {artifact ? "SAVED ARTIFACT" : "AGENT ILLUSTRATION"}
+            {artifact ? "SAVED ARTIFACT" : "INLINE FIGURE"}
           </span>
-          <span>{title}</span>
+          <span>{caption}</span>
         </span>
         <span className="figure-actions">
           <button
@@ -164,7 +189,11 @@ export const SvgFigure = memo(function SvgFigure({
           {prepared.error}
         </p>
       ) : (
-        <img src={prepared.uri} alt={title} loading="lazy" />
+        <img
+          src={prepared.uri}
+          alt={prepared.description || caption}
+          loading="lazy"
+        />
       )}
     </figure>
   );

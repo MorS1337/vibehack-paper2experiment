@@ -14,18 +14,35 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, body: string
   t.after(() => rm(dir, { recursive: true, force: true }));
   const binary = path.join(dir, 'whisper-cli');
   const model = path.join(dir, 'ggml-base.bin');
-  const marker = path.join(dir, 'invocation.json');
+  const marker = path.join(dir, 'invocation.txt');
   await writeFile(model, 'test model; fake cli only');
-  await writeFile(binary, `#!${process.execPath}\nconst fs=require('node:fs');\nif(process.argv.includes('--help')){console.log('test CLI');process.exit(0);}\nconst args=process.argv.slice(2);\nfs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({args,pid:process.pid,wav:args[args.indexOf('-f')+1]}));\n${body}\n`, { mode: 0o700 });
+  // POSIX shell, not the host runtime: this fixture must behave the same under Node or Electron.
+  await writeFile(binary, [
+    '#!/bin/sh',
+    'if [ "$1" = "--help" ]; then echo "test CLI"; exit 0; fi',
+    'wav=""',
+    'prev=""',
+    'for argument in "$@"; do',
+    '  if [ "$prev" = "-f" ]; then wav="$argument"; fi',
+    '  prev="$argument"',
+    'done',
+    `{ echo "$$"; echo "$wav"; for argument in "$@"; do printf '%s\\037' "$argument"; done; echo; } > ${JSON.stringify(marker)}`,
+    body
+  ].join('\n') + '\n', { mode: 0o700 });
   return { dir, marker, settings: { ...defaultSettings, whisperBinary: binary, whisperModel: model } };
 }
 async function invocation(marker: string): Promise<{ args: string[]; pid: number; wav: string }> {
-  for (let i=0;i<200;i++) { try { return JSON.parse(await readFile(marker,'utf8')); } catch { await new Promise(resolve=>setTimeout(resolve,10)); } }
+  for (let i=0;i<200;i++) {
+    try {
+      const [pid, wav, args] = (await readFile(marker,'utf8')).split('\n');
+      return { pid: Number(pid), wav, args: args.split('\x1f').filter(Boolean) };
+    } catch { await new Promise(resolve=>setTimeout(resolve,10)); }
+  }
   throw new Error('CLI did not start');
 }
 
 test('real subprocess receives Russian flags and PCM WAV; transcript is normalized and temp audio removed', async t => {
-  const f = await fixture(t, "console.log('  Проверить границу\\nХёффдинга  ');");
+  const f = await fixture(t, "printf '  Проверить границу\\nХёффдинга  \\n'");
   assert.equal((await whisperStatus(f.settings)).state, 'ready');
   assert.equal(await transcribe(wav(), f.settings), 'Проверить границу Хёффдинга');
   const run = await invocation(f.marker);
@@ -34,7 +51,7 @@ test('real subprocess receives Russian flags and PCM WAV; transcript is normaliz
 });
 
 test('missing binary/model and English-only models fail explicitly', async t => {
-  const f = await fixture(t, "console.log('unused')");
+  const f = await fixture(t, ": 'unused'");
   for (const [settings, expected] of [
     [{...f.settings,whisperBinary:path.join(f.dir,'absent')}, /Бинарник.*не найден/],
     [{...f.settings,whisperModel:''}, /Модель.*не выбрана/],
@@ -58,7 +75,7 @@ test('invalid WAV and recordings over 60s are rejected before a CLI is launched'
 });
 
 test('CLI failure and blank audio clean up WAV and never return a fake transcript', async t => {
-  for (const body of ["console.log('[BLANK_AUDIO]')", "console.error('model load failed');process.exit(2)"]) {
+  for (const body of ["printf '[BLANK_AUDIO]\\n'", "printf 'model load failed\\n' >&2; exit 2"]) {
     const f = await fixture(t, body);
     await assert.rejects(transcribe(wav(), f.settings), /не распознал|кодом 2.*model load failed/);
     const run = await invocation(f.marker);
@@ -68,7 +85,7 @@ test('CLI failure and blank audio clean up WAV and never return a fake transcrip
 
 test('matching cancel and harness shutdown kill the real CLI and await temp cleanup; stale cancel cannot stop a newer request', async t => {
   for (const mode of ['cancel', 'shutdown']) {
-    const f = await fixture(t, 'setInterval(()=>{},1000);');
+    const f = await fixture(t, 'while :; do sleep 1; done');
     const harness = new Harness(new Store(path.join(f.dir, 'state')));
     harness.store.settings = f.settings;
     const id = crypto.randomUUID();
@@ -85,7 +102,7 @@ test('matching cancel and harness shutdown kill the real CLI and await temp clea
 });
 
 test('hung CLI is killed at the 30s minimum timeout and its WAV directory is removed', { timeout: 40_000 }, async t => {
-  const f = await fixture(t, 'setInterval(()=>{},1000);');
+  const f = await fixture(t, 'while :; do sleep 1; done');
   const pending = transcribe(wav(), f.settings);
   const rejection = assert.rejects(pending, /не завершился за 30 с/);
   const run = await invocation(f.marker);
