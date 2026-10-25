@@ -31,7 +31,7 @@ export interface ExperimentRun {
   provisioningLabel?: string; provisioningUncertain?: boolean;
 }
 export interface AppSettings { piProvider: string; piModel: string; python: string; whisperBinary: string; whisperModel: string; sshKeyPath: string; }
-export interface ConnectionStatus { component: 'pi' | 'jev' | 'vast' | 'whisper' | 'smartcompact'; state: 'ready' | 'needs_setup' | 'error'; detail: string; }
+export interface ConnectionStatus { component: 'pi' | 'jev' | 'vast' | 'whisper' | 'snapcompact'; state: 'ready' | 'needs_setup' | 'error'; detail: string; }
 export interface Snapshot { runs: ExperimentRun[]; activeId?: string; settings: AppSettings; connections: ConnectionStatus[]; }
 export interface ProjectManifest { entryPoint: string; config: string; requirements: string; artifacts: string[]; }
 export interface ComputeContext {

@@ -79,6 +79,7 @@ test("one persistent conversation rejects writes before approval and again after
             models: [
               {
                 id: "permission-model",
+                input: ["text", "image"],
                 contextWindow: 128000,
                 maxTokens: 1024,
               },
