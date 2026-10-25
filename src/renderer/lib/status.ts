@@ -201,10 +201,10 @@ export const COMPONENT_META: Record<ConnectionStatus['component'], ComponentMeta
     purpose: 'Распознавание голосовой задачи',
     instruction: 'Выберите бинарник whisper и файл модели. Голос не покидает компьютер.'
   },
-  smartcompact: {
-    label: 'SmartCompact',
-    purpose: 'Сжатие контекста агента',
-    instruction: 'Проверьте пакет SmartCompact и его доступность для агентских сессий.'
+  snapcompact: {
+    label: 'SnapCompact',
+    purpose: 'Архив контекста агента в PNG',
+    instruction: 'Выберите vision-модель Pi. Архивы подписываются; текстовый fallback и потеря кадров блокируют запрос.'
   }
 };
 
@@ -219,7 +219,7 @@ export const CONNECTION_ORDER: ConnectionStatus['component'][] = [
   'jev',
   'vast',
   'whisper',
-  'smartcompact'
+  'snapcompact'
 ];
 
 export const TERMINAL_STATUSES: RunStatus[] = [

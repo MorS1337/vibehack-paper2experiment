@@ -18,11 +18,12 @@
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@napi-rs/canvas": "0.1.100",
+    "@nomeelnoj/pi-snap-compact": "0.1.1",
     "@typesafe-ai/sdk": "0.7.0",
+    "jiti": "2.7.0",
     "pdfjs-dist": "5.4.624",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "smartcompact": "0.1.8",
     "zod": "4.6.7"
   },
   "devDependencies": {
