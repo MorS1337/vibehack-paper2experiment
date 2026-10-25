@@ -7,7 +7,7 @@ import { collabLink } from '../shared/collab-link.js';
 import type { CollabStatus, ConversationUpdate, RunEvent } from '../shared/types.js';
 
 const READ_METHODS = new Set(['snapshot', 'events', 'conversation', 'artifactPreview', 'downloadArtifact', 'piProviders']);
-const WRITE_METHODS = new Set(['create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'importPaper', 'setBrief', 'sendMessage']);
+const WRITE_METHODS = new Set(['create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'importPaper', 'setBrief', 'sendMessage', 'cancelTranscription']);
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 const MAX_BODY = 4 * 1024 * 1024;
 const MAX_PDF = 25 * 1024 * 1024;

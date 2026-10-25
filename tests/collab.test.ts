@@ -58,8 +58,8 @@ test('HTTP serves only renderer assets; authenticates reads, enforces view acces
     assert.match(session.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
     const rpc = (token: string, method: string, extra: Record<string, string> = {}) => fetch(`${origin}/api/rpc`, { method: 'POST', headers: { ...auth(token), 'Content-Type': 'application/json', ...extra }, body: JSON.stringify({ method, args: [] }) });
     assert.equal((await rpc(view, 'snapshot')).status, 200);
-    for (const method of ['create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'importPaper', 'setBrief', 'sendMessage']) assert.equal((await rpc(view, method)).status, 403, method);
-    for (const method of ['folder', 'shutdown', 'choose', 'collab:start', '__proto__', 'sourcePdfPath', 'piLogin', 'piLoginRespond', 'piLoginState', 'authLink']) assert.equal((await rpc(control, method)).status, 404, method);
+    for (const method of ['create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'importPaper', 'setBrief', 'sendMessage', 'cancelTranscription']) assert.equal((await rpc(view, method)).status, 403, method);
+    for (const method of ['folder', 'shutdown', 'choose', 'collab:start', '__proto__', 'sourcePdfPath', 'piLogin', 'piLoginRespond', 'piLoginState', 'authLink', 'requestMicrophoneAccess']) assert.equal((await rpc(control, method)).status, 404, method);
     assert.equal((await rpc(control, 'create', { Origin: 'https://attacker.example' })).status, 403);
     assert.equal((await rpc(control, 'create')).status, 200);
     assert.deepEqual(calls.map(call => call.method), ['snapshot', 'create']);
@@ -128,9 +128,14 @@ test('browser adapter reads and controls the same RPC, reconnects and catches up
       assert.equal(calls.at(-1)?.args[0], 'run-1');
       const requestId = 'b48535d5-ab40-4bd7-b294-f0904db64532';
       const wav = Uint8Array.from([82, 73, 70, 70, 0, 255]);
-      await api.transcribe(wav.buffer);
-      assert.equal(calls.at(-1)?.args.length, 1);
+      const beforePermission = calls.length;
+      await api.requestMicrophoneAccess();
+      assert.equal(calls.length, beforePermission, 'phone permission must not call the desktop microphone');
+      await api.transcribe(wav.buffer, requestId);
+      assert.equal(calls.at(-1)?.args[1], requestId);
       assert.deepEqual(new Uint8Array(calls.at(-1)?.args[0] as ArrayBuffer), wav);
+      await api.cancelTranscription(requestId);
+      assert.deepEqual(calls.at(-1), { method: 'cancelTranscription', args: [requestId] });
       await api.sendMessage('run-1', 'Check the assumption', 'steer', requestId);
       assert.deepEqual(calls.at(-1), { method: 'sendMessage', args: ['run-1', 'Check the assumption', 'steer', requestId] });
       await api.conversation('run-1');
@@ -140,6 +145,8 @@ test('browser adapter reads and controls the same RPC, reconnects and catches up
       await assert.rejects(api.piLogin('provider', 'api_key'), /desktop/);
       const viewer = await connectRemote(view);
       await assert.rejects(viewer.cancel('run-1'), /только просмотр/);
+      await assert.rejects(viewer.requestMicrophoneAccess(), /view-only/);
+      await assert.rejects(viewer.cancelTranscription(requestId), /только просмотр/);
       const events: RunEvent[] = [], connections: string[] = [];
       const conversations: ConversationUpdate[] = [];
       const unConversation = api.onConversation(update => conversations.push(update));

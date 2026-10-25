@@ -26,6 +26,12 @@ import { SettingsView } from "./components/SettingsView.js";
 import { Conversation, FilePreview } from "./components/Conversation.js";
 import { NewExperiment } from "./components/NewExperiment.js";
 import { RichMessage } from "./components/RichMessage.js";
+import {
+  DictationControl,
+  DictationError,
+} from "./components/DictationControl.js";
+import { useVoiceTask } from "./hooks/useVoiceTask.js";
+import { insertTranscript } from "./lib/dictation.js";
 import { STATUS_META } from "./lib/status.js";
 import { PaperContext } from "./lib/paper-context.js";
 
@@ -325,6 +331,16 @@ function AppShell({ api }: { api: AppAPI }) {
   const [operation, setOperation] = useState(false);
   const [draft, setDraft] = useState("");
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
+  const voice = useVoiceTask(api, (transcript) => {
+    // Insert at the caret: dictation edits text, it never sends it.
+    const field = textarea.current;
+    const start = field?.selectionStart ?? draft.length;
+    const end = field?.selectionEnd ?? start;
+    setDraft(
+      (current) => insertTranscript(current, start, end, transcript).text,
+    );
+    requestAnimationFrame(() => textarea.current?.focus());
+  });
   const selected = useRef(selectedId);
   const textarea = useRef<HTMLTextAreaElement>(null);
   selected.current = selectedId;
@@ -909,6 +925,14 @@ function AppShell({ api }: { api: AppAPI }) {
                             disabled={viewOnly || otherActive}
                             onKeyDown={(event) => {
                               if (
+                                event.key === "Escape" &&
+                                voice.phase !== "idle"
+                              ) {
+                                event.preventDefault();
+                                voice.cancel();
+                                return;
+                              }
+                              if (
                                 event.key === "Enter" &&
                                 !event.shiftKey &&
                                 !event.nativeEvent.isComposing
@@ -918,6 +942,19 @@ function AppShell({ api }: { api: AppAPI }) {
                               }
                             }}
                           />
+                          <DictationControl
+                            state={voice}
+                            disabled={viewOnly || otherActive || operation}
+                            onStart={() => void voice.start()}
+                            onStop={() => void voice.stop()}
+                            onCancel={voice.cancel}
+                          />
+                          {voice.error ? (
+                            <DictationError
+                              message={voice.error}
+                              onDismiss={voice.clearError}
+                            />
+                          ) : null}
                           <div className="composer-footer">
                             <button
                               className="model-button"

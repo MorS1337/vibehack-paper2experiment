@@ -98,10 +98,15 @@ export async function connectRemote(value: string): Promise<AppAPI> {
       document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
     },
     openFolder: async () => { throw new Error("This folder is on the desktop. Use Evidence to preview or download files."); },
-    transcribe: audio => {
+    transcribe: (audio, requestId) => {
       let binary = "";
       for (const byte of new Uint8Array(audio)) binary += String.fromCharCode(byte);
-      return rpc("transcribe", btoa(binary));
+      return rpc("transcribe", btoa(binary), requestId);
+    },
+    cancelTranscription: requestId => rpc("cancelTranscription", requestId),
+    requestMicrophoneAccess: async () => {
+      if (session.access === "view") throw new Error("This connection is view-only.");
+      // The browser recorder requests this device's microphone; never the desktop's.
     },
     choose: async kind => {
       if (kind !== "pdf") throw new Error("Enter a path on the desktop, or use its native file picker.");
