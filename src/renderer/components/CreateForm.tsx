@@ -84,7 +84,7 @@ export function CreateForm({ api, busy, onCreate }: CreateFormProps) {
   });
 
   useEffect(() => {
-    if (voice.phase !== 'recording') return;
+    if (voice.phase === 'idle') return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -354,8 +354,18 @@ export function CreateForm({ api, busy, onCreate }: CreateFormProps) {
                 )}
               </Button>
             )}
+            {voice.phase === 'requesting' || voice.phase === 'transcribing' ? (
+              <Button variant="ghost" onClick={voice.cancel} title="Отменить диктовку (Esc)">
+                <CloseIcon /> Отменить
+              </Button>
+            ) : null}
             <span className="voice-caption">Whisper · до {RECORDING_MAX_SECONDS} с</span>
           </div>
+
+          {voice.phase === 'requesting' ? (
+            <p className="field-hint" role="status">Разрешите доступ в системном диалоге. Если он не появился, проверьте разрешение микрофона в настройках ОС. Ожидание можно отменить; через 15 секунд оно завершится.</p>
+          ) : null}
+          {voice.phase === 'recording' && voice.device ? <p className="field-hint" role="status">Микрофон: {voice.device}</p> : null}
 
           {voice.phase === 'recording' ? (
             <progress
