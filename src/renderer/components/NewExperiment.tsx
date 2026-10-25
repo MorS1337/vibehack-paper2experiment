@@ -321,7 +321,7 @@ export function NewExperiment({
                       "Independently check the Bernoulli–Hoeffding one-sided bound with the built-in demo artifact contract. This is a theorem check, not reproduction of a published numerical value.",
                     );
                     setContext(
-                      'p=0.5, epsilon=0.08, n_values=[10,20,40,80,160], trials_per_n=10000, seed=20261025, primary_n=160, tail_side="greater". Use Python standard-library random.Random(seed), exactly n draws per trial. Do not copy reference code. Authorize reasonable implementation choices as explicit assumptions, not missing data. Compare the exact binomial tails against Hoeffding; empirical estimates are finite-sample measurements, not a pass/fail proof. comparable=false, publishedValue=null.',
+                      'p=0.5, epsilon=0.08, n_values=[10,20,40,80,160], trials_per_n=10000, seed=20261025, primary_n=160, tail_side="greater". Fixed demo: the plan and bundled SplitMix64 reference code are explicit agent stubs, not model generation. Python execution and independent metric verification are real. comparable=false, publishedValue=null.',
                     );
                   }}
                 >

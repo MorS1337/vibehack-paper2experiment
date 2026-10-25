@@ -998,15 +998,21 @@ function AppShell({ api }: { api: AppAPI }) {
                           <button
                             type="button"
                             disabled={active || operation}
-                            onClick={() =>
-                              void perform(() =>
-                                run.spec
-                                  ? api.execute(run.id)
-                                  : api.plan(run.id),
-                              )
-                            }
+                            onClick={() => {
+                              if (run.status === "completed") {
+                                setView("files");
+                              } else if (run.spec) {
+                                setView("plan");
+                              } else {
+                                void perform(() => api.plan(run.id));
+                              }
+                            }}
                           >
-                            {run.spec ? "Run real Python" : "Prepare demo plan"}
+                            {run.status === "completed"
+                              ? "View evidence"
+                              : run.spec
+                                ? "Review demo plan"
+                                : "Prepare demo plan"}
                           </button>
                           {active ? (
                             <button
