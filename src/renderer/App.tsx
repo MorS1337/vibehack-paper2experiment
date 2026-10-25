@@ -1,564 +1,1108 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode
-} from 'react';
+  type FormEvent,
+} from "react";
 import type {
   AppAPI,
   AppSettings,
+  ConversationBlock,
+  ConversationPage,
   ExperimentInput,
   ExperimentRun,
-  ExperimentSpec,
   RunEvent,
-  Snapshot
-} from '../shared/types.js';
-import { getApi, errorMessage } from './lib/api.js';
-import {
-  COMPONENT_META,
-  CONNECTION_ORDER,
-  CONNECTION_STATE_META
-} from './lib/status.js';
-import type { Tone } from './lib/tone.js';
-import { BridgeUnavailable } from './components/BridgeUnavailable.js';
-import { HistoryPanel } from './components/HistoryPanel.js';
-import { ResultsView } from './components/ResultsView.js';
-import { RunPanel } from './components/RunPanel.js';
-import { SettingsView } from './components/SettingsView.js';
-import { Workspace } from './components/Workspace.js';
-import {
-  AlertIcon,
-  FileIcon,
-  RefreshIcon,
-  SettingsIcon,
-  TerminalIcon
-} from './components/icons.js';
-import { Button, EmptyState, Notice } from './components/ui.js';
+  Snapshot,
+} from "../shared/types.js";
+import { getApi, errorMessage } from "./lib/api.js";
+import { SettingsView } from "./components/SettingsView.js";
+import { Conversation, FilePreview } from "./components/Conversation.js";
+import { NewExperiment } from "./components/NewExperiment.js";
+import { RichMessage } from "./components/RichMessage.js";
+import { STATUS_META } from "./lib/status.js";
+import { PaperContext } from "./lib/paper-context.js";
 
-type Tab = 'workspace' | 'results' | 'settings';
-type NoticeState = { tone: 'error' | 'success' | 'info'; text: string };
+// PDF rendering is a browser-only, on-demand surface, not part of the initial UI bundle.
+const PaperPane = lazy(() => import("./components/PaperPane.js"));
+import "./styles.css";
 
-const TABS: { id: Tab; label: string; icon: ReactNode; shortcut: string }[] = [
-  { id: 'workspace', label: 'Эксперимент', icon: <FileIcon size={14} />, shortcut: '⌘/Ctrl+1' },
-  { id: 'results', label: 'Результаты', icon: <TerminalIcon size={14} />, shortcut: '⌘/Ctrl+2' },
-  { id: 'settings', label: 'Настройки', icon: <SettingsIcon size={14} />, shortcut: '⌘/Ctrl+3' }
+type View = "chat" | "plan" | "files" | "settings" | "new";
+const views: { id: View; label: string; glyph: string; shortcut: number }[] = [
+  { id: "chat", label: "Research", glyph: "↳", shortcut: 1 },
+  { id: "plan", label: "Protocol", glyph: "≡", shortcut: 2 },
+  { id: "files", label: "Evidence", glyph: "⌘", shortcut: 4 },
 ];
 
-const TAB_SHORTCUTS: Record<string, Tab> = {
-  '1': 'workspace',
-  '2': 'results',
-  '3': 'settings'
-};
-
-const SNAPSHOT_EVENT_TYPES: RunEvent['type'][] = ['status', 'artifact', 'compute', 'error'];
-
-function boundEvents(events: RunEvent[]): RunEvent[] {
-  return [...events]
-    .sort((left, right) => {
-      const diff = Date.parse(left.at) - Date.parse(right.at);
-      return diff !== 0 ? diff : left.id.localeCompare(right.id);
-    })
-    .slice(-500);
+function mergeBlocks(
+  older: ConversationBlock[],
+  newer: ConversationBlock[],
+): ConversationBlock[] {
+  const map = new Map(older.map((block) => [block.id, block]));
+  for (const block of newer) {
+    const previous = map.get(block.id);
+    map.set(block.id, { ...previous, ...block, at: previous?.at ?? block.at });
+  }
+  return [...map.values()].sort((a, b) => a.at - b.at);
 }
 
-function connectionTone(state: 'ready' | 'needs_setup' | 'error' | undefined): Tone {
-  if (!state) return 'neutral';
-  return CONNECTION_STATE_META[state].tone;
+function PlanView({
+  run,
+  onApprove,
+  onChat,
+  disabled,
+}: {
+  run: ExperimentRun;
+  onApprove: () => void;
+  onChat: () => void;
+  disabled: boolean;
+}) {
+  const paper = useContext(PaperContext);
+  const spec = run.spec;
+  if (!spec)
+    return (
+      <div className="empty-inspector">
+        <h1>No protocol yet.</h1>
+        <p>
+          Review the paper with the agent. It will submit a source-grounded
+          experiment protocol here before any code can run.
+        </p>
+        <button type="button" onClick={onChat}>
+          Continue research
+        </button>
+      </div>
+    );
+  return (
+    <div className="inspector-document">
+      <div className="document-heading">
+        <span className="eyebrow">REPRODUCTION PROTOCOL · V{spec.version}</span>
+        <h1>{spec.title}</h1>
+        <p>{spec.objective}</p>
+      </div>
+      <section>
+        <h2>Method</h2>
+        <RichMessage text={spec.method} />
+      </section>
+      <section>
+        <h2>Data</h2>
+        <p>{spec.data.description}</p>
+        <p className="muted">
+          {spec.data.split} {spec.data.preprocessing}
+        </p>
+      </section>
+      <section>
+        <h2>Parameters</h2>
+        <dl className="parameter-list">
+          {Object.entries(spec.parameters).map(([key, value]) => (
+            <div key={key}>
+              <dt>{key}</dt>
+              <dd>
+                {typeof value === "string" ? value : JSON.stringify(value)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+      <section>
+        <h2>Metric &amp; comparison</h2>
+        <p>
+          <code>{spec.metric.name}</code> · {spec.metric.computation}
+        </p>
+        <p>
+          {spec.metric.comparable
+            ? `Published value: ${spec.metric.publishedValue}`
+            : "Not a reproduction of a published numerical value."}
+        </p>
+        <p className="muted">{spec.baseline}</p>
+      </section>
+      <section>
+        <h2>Evidence from the paper</h2>
+        {spec.sourceRefs.map((ref, index) => (
+          <blockquote key={index}>
+            <button
+              type="button"
+              className="citation-link"
+              onClick={() => paper?.cite(ref.page, ref.quote)}
+            >
+              PAGE {ref.page} ↗
+            </button>
+            <p>{ref.quote}</p>
+          </blockquote>
+        ))}
+      </section>
+      {spec.assumptions.length ? (
+        <section>
+          <h2>Assumptions</h2>
+          <ul>
+            {spec.assumptions.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {spec.missing.length ? (
+        <section className="plan-blockers">
+          <h2>Unresolved</h2>
+          <ul>
+            {spec.missing.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+          <button type="button" onClick={onChat}>
+            Resolve in conversation ↗
+          </button>
+        </section>
+      ) : null}
+      <section>
+        <h2>Execution boundary</h2>
+        <p>
+          {run.input.mode} · {spec.limits.timeSeconds}s · $
+          {spec.limits.maxHourlyUSD}/hour · ${spec.limits.maxTotalUSD} total
+          cloud cap
+        </p>
+        <p className="muted">
+          {spec.requirements.cpuCores} CPU · {spec.requirements.ramGB} GB RAM
+          {spec.requirements.gpu
+            ? ` · ${spec.requirements.vramGB} GB GPU`
+            : " · no GPU"}{" "}
+          · {spec.requirements.diskGB} GB disk
+        </p>
+        <p className="muted">
+          Model-provider usage is separate. Local Python and shell tools run as
+          your user, not in an OS sandbox. Cloud provisioning requires a second
+          approval.
+        </p>
+      </section>
+      <div className="document-actions">
+        <button type="button" onClick={onChat}>
+          Request changes in chat
+        </button>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={
+            disabled || !!spec.missing.length || run.status === "completed"
+          }
+          onClick={onApprove}
+        >
+          {run.approvedPlanVersion === run.planVersion
+            ? "Continue approved plan"
+            : `Approve v${spec.version} & run`}
+        </button>
+      </div>
+      <details className="raw-spec">
+        <summary>Raw ExperimentSpec</summary>
+        <pre>{JSON.stringify(spec, null, 2)}</pre>
+      </details>
+    </div>
+  );
 }
 
-export function App() {
-  const api = getApi();
-  if (!api) return <BridgeUnavailable />;
-  return <AppShell api={api} />;
+function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
+  const [file, setFile] = useState<string | null>(null);
+  useEffect(() => setFile(null), [run.id]);
+  return (
+    <div className="inspector-document">
+      <div className="document-heading">
+        <span className="eyebrow">WORKSPACE & RESULTS</span>
+        <h1>
+          {run.status === "completed"
+            ? "Evidence, not just exit zero."
+            : "Experiment files"}
+        </h1>
+        <button type="button" onClick={() => void api.openFolder(run.id)}>
+          Open workspace ↗
+        </button>
+      </div>
+      {run.metrics ? (
+        <section>
+          <h2>Measured metrics</h2>
+          <dl className="parameter-list">
+            {Object.entries(run.metrics).map(([key, value]) => (
+              <div key={key}>
+                <dt>{key}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ) : null}
+      {run.verification ? (
+        <section>
+          <h2>Independent verification</h2>
+          <pre className="verification">{run.verification}</pre>
+        </section>
+      ) : null}
+      <section>
+        <h2>Files</h2>
+        <div className="file-list">
+          {[
+            "project/main.py",
+            "project/config.json",
+            "project/plan.json",
+            "project/requirements.txt",
+            ...run.artifacts.map((artifact) => artifact.path),
+          ]
+            .filter((value, index, list) => list.indexOf(value) === index)
+            .map((path) => (
+              <button
+                type="button"
+                key={path}
+                aria-pressed={file === path}
+                onClick={() => setFile(path)}
+              >
+                <span>{path.replace(/^project\//, "")}</span>
+                <span className="muted">
+                  {run.artifacts
+                    .find((artifact) => artifact.path === path)
+                    ?.sha256.slice(0, 10)}
+                </span>
+              </button>
+            ))}
+        </div>
+        {file ? (
+          <FilePreview key={file} api={api} run={run} file={file} />
+        ) : null}
+      </section>
+      {run.report ? (
+        <section>
+          <h2>Agent report</h2>
+          <RichMessage text={run.report} />
+        </section>
+      ) : null}
+      {run.command ? (
+        <details>
+          <summary>Exact rerun command</summary>
+          <pre>{run.command}</pre>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 function AppShell({ api }: { api: AppAPI }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('workspace');
-  const [historyMode, setHistoryMode] = useState<'history' | 'create'>('history');
+  const [view, setView] = useState<View>("chat");
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [paperOpen, setPaperOpen] = useState(true);
+  const [paperPage, setPaperPage] = useState(1);
+  const [paperQuote, setPaperQuote] = useState("");
+  const [paperWidth, setPaperWidth] = useState(44);
+  const [briefPassage, setBriefPassage] = useState<{
+    page: number;
+    quote: string;
+  } | null>(null);
+  const [blocks, setBlocks] = useState<ConversationBlock[]>([]);
+  const [page, setPage] = useState<ConversationPage>({
+    blocks: [],
+    hasMore: false,
+  });
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const [eventsError, setEventsError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<NoticeState | null>(null);
-  const [operation, setOperation] = useState<string | null>(null);
-
-  const selectedIdRef = useRef<string | null>(null);
-  const operationRef = useRef<string | null>(null);
-  const initializedRef = useRef(false);
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
+  const [queued, setQueued] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [operation, setOperation] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
+  const selected = useRef(selectedId);
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  selected.current = selectedId;
   const refresh = useCallback(async () => {
-    try {
-      const next = await api.snapshot();
-      setSnapshot(next);
-      setLoadError(null);
-      setSelectedId((previous) => {
-        if (previous && next.runs.some((run) => run.id === previous)) return previous;
-        const active = next.runs.find((run) => run.id === next.activeId);
-        return active?.id ?? next.runs[0]?.id ?? null;
-      });
-    } catch (error) {
-      setLoadError(errorMessage(error));
-      throw error;
-    }
+    const next = await api.snapshot();
+    setSnapshot(next);
+    setSelectedId((previous) =>
+      previous && next.runs.some((run) => run.id === previous)
+        ? previous
+        : (next.runs[0]?.id ?? null),
+    );
   }, [api]);
-
-  const loadEvents = useCallback(
-    async (id: string) => {
-      try {
-        const list = await api.events(id);
-        if (selectedIdRef.current !== id) return;
-        setEvents((previous) =>
-          boundEvents([
-            ...list,
-            ...previous.filter((event) => !list.some((item) => item.id === event.id))
-          ])
-        );
-        setEventsError(null);
-      } catch (error) {
-        if (selectedIdRef.current !== id) return;
-        setEventsError(errorMessage(error));
-      }
-    },
-    [api]
-  );
-
-  useEffect(() => {
-    selectedIdRef.current = selectedId;
-  }, [selectedId]);
-
-  useEffect(() => {
-    setLoading(true);
-    refresh()
-      .catch(() => undefined)
-      .finally(() => setLoading(false));
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!snapshot || initializedRef.current) return;
-    initializedRef.current = true;
-    if (snapshot.runs.length === 0) setHistoryMode('create');
-  }, [snapshot]);
-
-  useEffect(() => {
-    if (!selectedId) {
-      setEvents([]);
-      setEventsError(null);
-      return;
-    }
-    setEvents([]);
-    setEventsError(null);
-    void loadEvents(selectedId);
-  }, [selectedId, loadEvents]);
-
   const refreshRef = useRef(refresh);
-  const loadEventsRef = useRef(loadEvents);
-
+  refreshRef.current = refresh;
   useEffect(() => {
-    refreshRef.current = refresh;
-    loadEventsRef.current = loadEvents;
-  }, [refresh, loadEvents]);
-
+    void refresh().catch((cause) => setError(errorMessage(cause)));
+  }, [refresh]);
   useEffect(() => {
     let timer: number | undefined;
-    let needsSnapshot = false;
-    const unsubscribe = api.onEvent((event) => {
-      const selected = selectedIdRef.current;
-      if (event.runId === selected) {
-        setEvents((previous) => boundEvents([...previous.filter((item) => item.id !== event.id), event]));
-      }
-      if (SNAPSHOT_EVENT_TYPES.includes(event.type)) needsSnapshot = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
+    const stopEvents = api.onEvent((event) => {
+      if (selected.current === event.runId)
+        setEvents((previous) => [...previous, event].slice(-500));
+      timer ??= window.setTimeout(() => {
         timer = undefined;
-        if (needsSnapshot) {
-          needsSnapshot = false;
-          refreshRef.current().catch(() => undefined);
-        }
-        const id = selectedIdRef.current;
-        if (id) void loadEventsRef.current(id);
-      }, 500);
+        void refreshRef
+          .current()
+          .catch((cause) => setError(errorMessage(cause)));
+      }, 250);
+      if (event.type === "status" && selected.current === event.runId) {
+        void api
+          .conversation(event.runId)
+          .then((result) => {
+            if (selected.current === event.runId) {
+              setBlocks((previous) => mergeBlocks(previous, result.blocks));
+              setPage((current) => ({
+                ...result,
+                before:
+                  current.before === undefined
+                    ? result.before
+                    : Math.min(current.before, result.before ?? current.before),
+                hasMore: current.before === 0 ? false : result.hasMore,
+              }));
+            }
+          })
+          .catch((cause) => setError(errorMessage(cause)));
+      }
+    });
+    const stopConversation = api.onConversation((update) => {
+      if (selected.current !== update.runId) return;
+      setBlocks((previous) => mergeBlocks(previous, update.blocks));
+      if (update.queued) setQueued(update.queued);
     });
     return () => {
-      unsubscribe();
-      if (timer !== undefined) window.clearTimeout(timer);
+      stopEvents();
+      stopConversation();
+      window.clearTimeout(timer);
     };
   }, [api]);
-
   useEffect(() => {
-    if (notice?.tone !== 'success') return;
-    const timer = window.setTimeout(() => setNotice(null), 5000);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
+    setBlocks([]);
+    setEvents([]);
+    setQueued([]);
+    setDraft("");
+    setPage({ blocks: [], hasMore: false });
+    if (!selectedId) return;
+    setLoading(true);
+    void Promise.all([api.conversation(selectedId), api.events(selectedId)])
+      .then(([result, history]) => {
+        if (selected.current !== selectedId) return;
+        setBlocks((previous) => mergeBlocks(result.blocks, previous));
+        setPage(result);
+        setEvents((previous) => [
+          ...history,
+          ...previous.filter(
+            (event) => !history.some((item) => item.id === event.id),
+          ),
+        ]);
+      })
+      .catch((cause) => {
+        if (selected.current === selectedId) setError(errorMessage(cause));
+      })
+      .finally(() => {
+        if (selected.current === selectedId) setLoading(false);
+      });
+  }, [api, selectedId]);
+  const run = snapshot?.runs.find((item) => item.id === selectedId) ?? null;
+  const active = !!run && snapshot?.activeId === run.id;
+  const otherActive = !!snapshot?.activeId && !active;
+  const showNew = view === "new" || (!run && view !== "settings");
+  const newPaper = snapshot?.runs.find((item) => item.id === draftId) ?? null;
+  const paperRun = showNew ? newPaper : run;
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing) return;
-      const target = TAB_SHORTCUTS[event.key];
-      if (!target) return;
-      event.preventDefault();
-      setTab(target);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  const perform = useCallback(
-    async (label: string, action: () => Promise<unknown>, success: string) => {
-      if (operationRef.current) return false;
-      operationRef.current = label;
-      setOperation(label);
-      setNotice(null);
-      try {
-        await action();
-      } catch (error) {
-        setNotice({ tone: 'error', text: `${label}: ${errorMessage(error)}` });
-        return false;
-      } finally {
-        try {
-          await refresh();
-        } catch {
-          // refresh() already exposed the load error banner.
-        }
-        const currentId = selectedIdRef.current;
-        if (currentId) await loadEvents(currentId);
-        operationRef.current = null;
-        setOperation(null);
-      }
-      setNotice({ tone: 'success', text: success });
+    if (run && !run.input.task && view === "chat") {
+      setDraftId(run.id);
+      setView("new");
+    }
+  }, [run?.id, run?.input.task, view]);
+  useEffect(() => {
+    setPaperPage(1);
+    setPaperQuote("");
+  }, [paperRun?.id]);
+  const cite = useCallback(
+    (target: number, quote = "") => {
+      if (
+        !paperRun?.source ||
+        target < 1 ||
+        target > paperRun.source.pages.length
+      )
+        return;
+      setPaperPage(target);
+      setPaperQuote(quote);
+      setPaperOpen(true);
+    },
+    [paperRun?.id, paperRun?.source?.pages.length],
+  );
+  const paperNavigation = useMemo(() => ({ cite }), [cite]);
+  const newExperiment = () => {
+    setDraftId(null);
+    setBriefPassage(null);
+    setView("new");
+    setError("");
+  };
+  const discussQuote = (target: number, quote: string) => {
+    if (showNew) {
+      setBriefPassage({ page: target, quote });
+      return;
+    }
+    setView("chat");
+    setDraft(
+      (previous) =>
+        `${previous ? `${previous}\n\n` : ""}From [p. ${target}](#page=${target}):\n> ${quote.replace(/\n/g, "\n> ")}\n\n`,
+    );
+    requestAnimationFrame(() => textarea.current?.focus());
+  };
+  const perform = async (action: () => Promise<unknown>) => {
+    setOperation(true);
+    setError("");
+    try {
+      await action();
+      await refresh();
       return true;
-    },
-    [refresh, loadEvents]
-  );
-
-  const selectRun = useCallback(
-    (id: string) => {
-      selectedIdRef.current = id;
-      setSelectedId(id);
-      setHistoryMode('history');
-      if (tab === 'settings') setTab('workspace');
-    },
-    [tab]
-  );
-
-  const handleCreate = useCallback(
-    async (input: ExperimentInput) => {
-      if (operationRef.current) return false;
-      operationRef.current = 'Создание эксперимента';
-      setOperation('Создание эксперимента');
-      setNotice(null);
-      try {
-        let created: ExperimentRun | null = null;
-        try {
-          created = await api.create(input);
-        } catch (error) {
-          setNotice({ tone: 'error', text: `Создание эксперимента: ${errorMessage(error)}` });
-          return false;
-        }
-        if (!created) return false;
-        selectedIdRef.current = created.id;
-        setSelectedId(created.id);
-        try {
-          await refresh();
-        } catch {
-          // The load error banner explains that state could not be refreshed.
-        }
-        selectedIdRef.current = created.id;
-        setSelectedId(created.id);
-        setHistoryMode('history');
-        setTab('workspace');
-        setNotice({
-          tone: 'success',
-          text: `Эксперимент «${created.title}» создан. Запуск не начат — сначала сформируйте план.`
-        });
-        return true;
-      } finally {
-        operationRef.current = null;
-        setOperation(null);
-      }
-    },
-    [api, refresh]
-  );
-
-  const handleRefresh = useCallback(async () => {
+    } catch (cause) {
+      setError(errorMessage(cause));
+      return false;
+    } finally {
+      setOperation(false);
+    }
+  };
+  const approvePlan = () => {
+    if (run)
+      void perform(() => api.execute(run.id)).then((ok) => {
+        if (ok) setView("chat");
+      });
+  };
+  const send = async (event?: FormEvent) => {
+    event?.preventDefault();
+    if (!run || !draft.trim() || operation || otherActive) return;
+    const text = draft;
+    setDraft("");
+    const ok = await perform(() => api.sendMessage(run.id, text, delivery));
+    if (!ok) setDraft((current) => current || text);
+    textarea.current?.focus();
+  };
+  const older = async () => {
+    if (!run || page.before === undefined) return;
     setLoading(true);
     try {
-      await refresh();
-    } catch {
-      // Exposed through loadError.
+      const result = await api.conversation(run.id, page.before);
+      if (selected.current === run.id) {
+        setBlocks((previous) => mergeBlocks(result.blocks, previous));
+        setPage(result);
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
     } finally {
       setLoading(false);
     }
-  }, [refresh]);
-
-  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
-    let nextIndex: number | null = null;
-    if (event.key === 'ArrowRight') nextIndex = (index + 1) % TABS.length;
-    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + TABS.length) % TABS.length;
-    if (event.key === 'Home') nextIndex = 0;
-    if (event.key === 'End') nextIndex = TABS.length - 1;
-    if (nextIndex === null) return;
-    event.preventDefault();
-    setTab(TABS[nextIndex].id);
-    tabRefs.current[nextIndex]?.focus();
   };
-
-  const selectedRun = snapshot?.runs.find((run) => run.id === selectedId) ?? null;
-  const activeRun = snapshot?.runs.find((run) => run.id === snapshot.activeId) ?? null;
-  const otherActive = Boolean(activeRun && selectedRun && activeRun.id !== selectedRun.id);
-  const busy = operation !== null;
-  const readyConnections = snapshot?.connections.filter((connection) => connection.state === 'ready').length ?? 0;
-  const totalConnections = snapshot?.connections.length ?? 0;
-
+  const importPaper = async (source: string) => {
+    const imported = await api.importPaper(source);
+    setDraftId(imported.id);
+    setSelectedId(imported.id);
+    setBriefPassage(null);
+    setView("new");
+    setPaperOpen(true);
+    await refresh();
+  };
+  const startResearch = async (input: ExperimentInput) => {
+    if (!newPaper?.source)
+      throw new Error("Import a paper before providing the research brief.");
+    try {
+      await api.setBrief(newPaper.id, input);
+      setView("chat");
+      await refresh();
+      if (input.agentMode === "pi")
+        await api.sendMessage(newPaper.id, input.task, "followUp");
+      else await api.plan(newPaper.id);
+      await refresh();
+    } catch (cause) {
+      setError(errorMessage(cause));
+      throw cause;
+    }
+  };
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setDraftId(null);
+        setBriefPassage(null);
+        setView("new");
+      }
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        ["1", "2", "3", "4", "5"].includes(event.key)
+      ) {
+        event.preventDefault();
+        if (event.key === "3") setPaperOpen((previous) => !previous);
+        else
+          setView(
+            (
+              {
+                "1": "chat",
+                "2": "plan",
+                "4": "files",
+                "5": "settings",
+              } as Record<string, View>
+            )[event.key],
+          );
+      }
+      if (event.key === "Escape" && active && run) {
+        event.preventDefault();
+        void api
+          .cancel(run.id)
+          .then(refresh)
+          .catch((cause) => setError(errorMessage(cause)));
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [api, active, run, refresh]);
+  const hasPaper = !!paperRun?.source && view !== "settings";
+  const splitPaper = hasPaper && paperOpen;
   return (
-    <div className="app-shell">
-      <button
-        type="button"
-        className="skip-link"
-        onClick={() => document.getElementById('main-content')?.focus()}
-      >
-        Перейти к содержимому
-      </button>
-      <header className="app-header">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">P2E</span>
-          <span className="brand-text">
-            <span className="brand-title">Paper2Experiment</span>
-            <span className="brand-sub">исследовательский стенд</span>
-          </span>
-        </div>
-
-        <nav className="tabbar" role="tablist" aria-label="Разделы приложения">
-          {TABS.map((item, index) => (
-            <button
-              key={item.id}
-              id={`tab-${item.id}`}
-              ref={(node) => {
-                tabRefs.current[index] = node;
-              }}
-              type="button"
-              role="tab"
-              aria-selected={tab === item.id}
-              aria-controls={`panel-${item.id}`}
-              tabIndex={tab === item.id ? 0 : -1}
-              className={`tab${tab === item.id ? ' is-active' : ''}`}
-              title={`${item.label} (${item.shortcut})`}
-              onClick={() => setTab(item.id)}
-              onKeyDown={(event) => handleTabKeyDown(event, index)}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="header-spacer" />
-
-        {operation ? (
-          <span className="operation-pill" role="status">
-            <span className="spinner" aria-hidden="true" />
-            <span>{operation}</span>
-          </span>
-        ) : activeRun ? (
+    <PaperContext.Provider value={paperNavigation}>
+      <div className="harness-app">
+        <aside className="vertical-rail" aria-label="Workspace navigation">
+          <div className="rail-brand">
+            <span className="brand-mark">p₂</span>
+            <span>paper2experiment</span>
+          </div>
           <button
+            className={`new-session-button${view === "new" ? " selected" : ""}`}
             type="button"
-            className="active-pill"
-            onClick={() => {
-              selectRun(activeRun.id);
-              setTab('workspace');
-            }}
-            title={activeRun.title}
+            onClick={newExperiment}
           >
-            <span className="live-dot" aria-hidden="true" />
-            <span className="active-pill-text">Активен: {activeRun.title}</span>
+            ＋ New experiment <kbd>⌘N</kbd>
           </button>
-        ) : null}
-
-        <button
-          type="button"
-          className="conn-summary"
-          onClick={() => setTab('settings')}
-          aria-label={`Подключения: готово ${readyConnections} из ${totalConnections || 5}`}
-          title="Открыть настройки подключений"
-        >
-          <span className="conn-dots" aria-hidden="true">
-            {CONNECTION_ORDER.map((component) => {
-              const connection = snapshot?.connections.find((item) => item.component === component);
-              const tone = connectionTone(connection?.state);
-              const stateLabel = connection
-                ? CONNECTION_STATE_META[connection.state].label
-                : 'Нет данных';
-              return (
-                <span
-                  key={component}
-                  className={`mini-dot tone-bg-${tone}`}
-                  title={`${COMPONENT_META[component].label}: ${stateLabel}`}
-                />
-              );
-            })}
-          </span>
-          <span className="conn-summary-text">
-            {snapshot ? `${readyConnections}/${totalConnections || 5}` : 'Подключения'}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          className="header-icon-button"
-          onClick={() => void handleRefresh()}
-          disabled={loading}
-          aria-label="Обновить состояние"
-          title="Обновить состояние"
-        >
-          <RefreshIcon />
-        </button>
-      </header>
-
-      {loadError ? (
-        <div className="load-banner" role="alert">
-          <AlertIcon />
-          <span>{loadError}</span>
-          <Button size="sm" variant="secondary" onClick={() => void handleRefresh()} loading={loading}>
-            Повторить
-          </Button>
-        </div>
-      ) : null}
-
-      {notice ? (
-        <Notice tone={notice.tone} onDismiss={() => setNotice(null)}>
-          {notice.text}
-        </Notice>
-      ) : null}
-
-      <main className="app-main" id="main-content" tabIndex={-1}>
-        <HistoryPanel
-          api={api}
-          snapshot={snapshot}
-          loading={loading}
-          loadError={loadError}
-          selectedId={selectedId}
-          mode={historyMode}
-          busy={busy}
-          onModeChange={setHistoryMode}
-          onSelect={selectRun}
-          onRefresh={() => void handleRefresh()}
-          onCreate={handleCreate}
-        />
-
-        {tab === 'workspace' ? (
-          <div
-            className="workspace-grid"
-            role="tabpanel"
-            id="panel-workspace"
-            aria-labelledby="tab-workspace"
-          >
-            <Workspace
-              run={selectedRun}
-              busy={busy}
-              otherActive={otherActive}
-              onPlan={(id) => perform('Формирование плана', () => api.plan(id), 'План сформирован.')}
-              onSavePlan={(id: string, spec: ExperimentSpec) =>
-                perform(
-                  'Сохранение плана',
-                  () => api.savePlan(id, spec),
-                  'Новая версия плана сохранена.'
-                )
-              }
-              onNewExperiment={() => {
-                setHistoryMode('create');
-                setTab('workspace');
-              }}
-            />
-            <RunPanel
-              run={selectedRun}
-              events={events}
-              eventsError={eventsError}
-              activeRunTitle={activeRun && activeRun.id !== selectedRun?.id ? activeRun.title : null}
-              otherActive={otherActive}
-              busy={busy}
-              onExecute={(id) =>
-                perform('Запуск эксперимента', () => api.execute(id), 'Запуск инициирован.')
-              }
-              onApprove={(id) =>
-                perform('Подтверждение оплаты', () => api.approve(id), 'Подтверждение отправлено.')
-              }
-              onCancel={(id) => perform('Отмена запуска', () => api.cancel(id), 'Команда отмены отправлена.')}
-              onCleanup={(id) =>
-                perform('Очистка', () => api.cleanup(id), 'Запрос очистки выполнен.')
-              }
-              onOpenResults={() => setTab('results')}
-              onOpenSettings={() => setTab('settings')}
-            />
-          </div>
-        ) : tab === 'results' ? (
-          <div
-            className="wide-panel"
-            role="tabpanel"
-            id="panel-results"
-            aria-labelledby="tab-results"
-          >
-            <ResultsView
-              run={selectedRun}
-              busy={busy}
-              otherActive={otherActive}
-              onOpenFolder={(id) =>
-                perform('Открытие папки', () => api.openFolder(id), 'Папка запуска открыта.')
-              }
-              onCleanup={(id) =>
-                perform('Очистка', () => api.cleanup(id), 'Запрос очистки выполнен.')
-              }
-            />
-          </div>
-        ) : snapshot ? (
-          <div
-            className="wide-panel"
-            role="tabpanel"
-            id="panel-settings"
-            aria-labelledby="tab-settings"
-          >
-            <SettingsView
-              api={api}
-              snapshot={snapshot}
-              busy={busy}
-              onSave={(settings: AppSettings) =>
-                perform('Сохранение настроек', () => api.saveSettings(settings), 'Настройки сохранены.')
-              }
-              onRefresh={async () => {
-                await refresh();
-              }}
-            />
-          </div>
-        ) : (
-          <div
-            className="wide-panel"
-            role="tabpanel"
-            id="panel-settings"
-            aria-labelledby="tab-settings"
-          >
-            <div className="card center-empty">
-              <EmptyState
-                title={loading ? 'Загрузка настроек' : 'Настройки недоступны'}
-                icon={loading ? undefined : <AlertIcon size={22} />}
-                actions={
-                  loading ? undefined : (
-                    <Button variant="primary" onClick={() => void handleRefresh()}>
-                      Повторить
-                    </Button>
-                  )
-                }
+          <div className="rail-label">EXPERIMENTS</div>
+          <div className="session-list">
+            {snapshot?.runs.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`session-tab${item.id === selectedId && (view !== "new" || item.id === draftId) ? " selected" : ""}`}
+                onClick={() => {
+                  setSelectedId(item.id);
+                  if (!item.input.task) {
+                    setDraftId(item.id);
+                    setView("new");
+                  } else setView("chat");
+                  setError("");
+                }}
+                title={item.title || "Importing paper"}
               >
-                {loading
-                  ? 'Получаем состояние подключений из Electron.'
-                  : loadError ?? 'Нативный мост не вернул состояние.'}
-              </EmptyState>
-            </div>
+                <span
+                  className={`session-dot ${snapshot.activeId === item.id ? "working-dot" : item.status === "completed" ? "is-complete" : item.status === "failed" ? "is-error" : ""}`}
+                />
+                <span>
+                  {item.title ||
+                    (item.status === "importing"
+                      ? "Importing paper…"
+                      : "Paper · awaiting brief")}
+                </span>
+              </button>
+            ))}
           </div>
-        )}
-      </main>
+          {run && !showNew ? (
+            <nav className="vertical-tabs" aria-label="Experiment views">
+              {views.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-current={view === item.id ? "page" : undefined}
+                  className={view === item.id ? "selected" : ""}
+                  onClick={() => setView(item.id)}
+                >
+                  <span className="nav-glyph">{item.glyph}</span>
+                  {item.label}
+                  <kbd>⌘{item.shortcut}</kbd>
+                </button>
+              ))}
+              <button
+                type="button"
+                aria-pressed={paperOpen}
+                onClick={() => setPaperOpen((previous) => !previous)}
+              >
+                <span className="nav-glyph">▤</span>Source paper<kbd>⌘3</kbd>
+              </button>
+            </nav>
+          ) : null}
+          <div className="rail-bottom">
+            <button
+              type="button"
+              className={view === "settings" ? "selected" : ""}
+              onClick={() => setView("settings")}
+            >
+              <span className="nav-glyph">⚙</span>Settings<kbd>⌘5</kbd>
+            </button>
+            <span className="rail-status">
+              {snapshot
+                ? `${snapshot.connections.filter((connection) => connection.state === "ready").length}/${snapshot.connections.length} connected`
+                : "Connecting…"}
+            </span>
+          </div>
+        </aside>
+        <main className="main-surface">
+          <header className="workspace-heading">
+            <div>
+              <span className="header-location">
+                {showNew
+                  ? "New experiment"
+                  : view === "settings"
+                    ? "Settings"
+                    : run?.title}
+              </span>
+              {run && !showNew && view !== "settings" ? (
+                <span className="header-state">
+                  {active ? "Working" : STATUS_META[run.status].label}
+                </span>
+              ) : null}
+            </div>
+            <div className="heading-actions">
+              {hasPaper ? (
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => setPaperOpen((previous) => !previous)}
+                  aria-pressed={paperOpen}
+                >
+                  {paperOpen ? "Hide paper" : "Show paper"} ▤
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="quiet-button"
+                onClick={() =>
+                  void refresh().catch((cause) => setError(errorMessage(cause)))
+                }
+                aria-label="Refresh state"
+              >
+                ↻
+              </button>
+            </div>
+          </header>
+          {error ? (
+            <div className="error-banner" role="alert">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={() => setError("")}
+                aria-label="Dismiss error"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
+          {otherActive ? (
+            <div className="quiet-banner">
+              Another experiment is active. You can browse this session; stop
+              the active session before executing here.
+            </div>
+          ) : null}
+          {view === "settings" && snapshot ? (
+            <div className="settings-scroll">
+              <SettingsView
+                api={api}
+                snapshot={snapshot}
+                busy={operation}
+                onSave={(settings: AppSettings) =>
+                  perform(() => api.saveSettings(settings))
+                }
+                onRefresh={refresh}
+              />
+            </div>
+          ) : null}
+          {view !== "settings" ? (
+            <div
+              className={`research-stage${splitPaper ? " with-paper" : ""}`}
+              style={
+                { "--paper-width": `${paperWidth}%` } as React.CSSProperties
+              }
+            >
+              <section className="research-workbench">
+                {!showNew && run ? (
+                  <div
+                    className="research-progress"
+                    aria-label="Reproduction workflow"
+                  >
+                    <span className={run.source ? "is-done" : ""}>
+                      01 Paper
+                    </span>
+                    <span className={run.spec ? "is-done" : "is-current"}>
+                      02 Protocol{run.spec ? ` · v${run.planVersion}` : ""}
+                    </span>
+                    <span
+                      className={
+                        run.status === "running"
+                          ? "is-current"
+                          : run.metrics
+                            ? "is-done"
+                            : ""
+                      }
+                    >
+                      03 Experiment
+                    </span>
+                    <button
+                      type="button"
+                      className={run.verification ? "is-done" : ""}
+                      onClick={() => setView("files")}
+                    >
+                      04 Evidence ↗
+                    </button>
+                  </div>
+                ) : null}
+                {showNew ? (
+                  <div className="document-scroll">
+                    <NewExperiment
+                      key={draftId ?? "new"}
+                      api={api}
+                      paper={newPaper}
+                      passage={briefPassage}
+                      onImport={importPaper}
+                      onStart={startResearch}
+                      onReplace={newExperiment}
+                      disabled={!!snapshot?.activeId}
+                    />
+                  </div>
+                ) : null}
+                {run && !showNew ? (
+                  <>
+                    <div className="chat-workspace" hidden={view !== "chat"}>
+                      <Conversation
+                        key={run.id}
+                        api={api}
+                        run={run}
+                        blocks={blocks}
+                        active={active}
+                        queued={queued}
+                        hasMore={page.hasMore}
+                        loading={loading}
+                        onOlder={() => void older()}
+                      />
+                      {run.status === "awaiting_approval" && active ? (
+                        <div className="approval-strip cloud-approval">
+                          <div>
+                            <strong>Cloud execution requires approval</strong>
+                            <span>
+                              {run.target?.label} · ${run.target?.hourlyUSD}
+                              /hour · estimated ${run.target?.estimatedUSD}
+                            </span>
+                            <span>
+                              Offer {run.target?.offerId} · cap $
+                              {run.spec?.limits.maxTotalUSD} · cleanup{" "}
+                              {run.input.cleanup}
+                            </span>
+                          </div>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            onClick={() =>
+                              void perform(() => api.approve(run.id))
+                            }
+                          >
+                            Approve paid instance
+                          </button>
+                        </div>
+                      ) : null}
+                      {run.spec &&
+                      run.status === "ready" &&
+                      !active &&
+                      run.approvedPlanVersion !== run.planVersion ? (
+                        <div className="approval-strip">
+                          <span>
+                            Protocol v{run.planVersion} is ready for scientific
+                            review.
+                          </span>
+                          <button type="button" onClick={() => setView("plan")}>
+                            Review protocol ↗
+                          </button>
+                        </div>
+                      ) : null}
+                      {run.cleanupRequired ||
+                      run.instanceId ||
+                      run.provisioningUncertain ? (
+                        <div className="approval-strip cloud-approval">
+                          <span>
+                            Cloud resources may still be billing. Export and
+                            cleanup are required.
+                          </span>
+                          <button
+                            type="button"
+                            disabled={active || operation}
+                            onClick={() =>
+                              void perform(() => api.cleanup(run.id))
+                            }
+                          >
+                            Export &amp; clean up
+                          </button>
+                        </div>
+                      ) : null}
+                      {!active && run.pendingInputs?.length ? (
+                        <div className="pending-inputs">
+                          <span>
+                            Unsent input · preserved after interruption
+                          </span>
+                          {run.pendingInputs.map((input) => (
+                            <div key={input.id}>
+                              <span>{input.text}</span>
+                              <button
+                                type="button"
+                                disabled={operation || otherActive}
+                                onClick={() =>
+                                  void perform(() =>
+                                    api.sendMessage(
+                                      run.id,
+                                      input.text,
+                                      input.delivery,
+                                      input.id,
+                                    ),
+                                  )
+                                }
+                              >
+                                Resend ↗
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {run.input.agentMode === "pi" ? (
+                        <form
+                          className="chat-composer"
+                          onSubmit={(event) => void send(event)}
+                        >
+                          <textarea
+                            ref={textarea}
+                            aria-label="Research message"
+                            placeholder={
+                              active
+                                ? "Clarify an assumption or queue the next research question…"
+                                : "Question a claim, refine the protocol, or interpret the evidence…"
+                            }
+                            value={draft}
+                            onChange={(event) => setDraft(event.target.value)}
+                            rows={2}
+                            maxLength={30000}
+                            disabled={otherActive}
+                            onKeyDown={(event) => {
+                              if (
+                                event.key === "Enter" &&
+                                !event.shiftKey &&
+                                !event.nativeEvent.isComposing
+                              ) {
+                                event.preventDefault();
+                                void send();
+                              }
+                            }}
+                          />
+                          <div className="composer-footer">
+                            <button
+                              className="model-button"
+                              type="button"
+                              onClick={() => setView("settings")}
+                              title="Model and provider settings"
+                            >
+                              {snapshot?.settings.piProvider || "Auto"} /{" "}
+                              {snapshot?.settings.piModel || "available model"}
+                            </button>
+                            <span className="composer-spacer" />
+                            {active ? (
+                              <>
+                                <select
+                                  aria-label="Message delivery"
+                                  value={delivery}
+                                  onChange={(event) =>
+                                    setDelivery(
+                                      event.target.value as
+                                        | "steer"
+                                        | "followUp",
+                                    )
+                                  }
+                                >
+                                  <option value="steer">
+                                    Steer at next boundary
+                                  </option>
+                                  <option value="followUp">
+                                    Queue after current work
+                                  </option>
+                                </select>
+                                <button
+                                  className="stop-button"
+                                  type="button"
+                                  disabled={operation}
+                                  onClick={() =>
+                                    void perform(() => api.cancel(run.id))
+                                  }
+                                >
+                                  ■ Stop <kbd>esc</kbd>
+                                </button>
+                              </>
+                            ) : (
+                              <span className="composer-hint">
+                                ↵ send · ⇧↵ newline
+                              </span>
+                            )}
+                            <button
+                              className="send-button"
+                              type="submit"
+                              disabled={
+                                !draft.trim() || operation || otherActive
+                              }
+                              aria-label={
+                                active ? "Queue message" : "Send message"
+                              }
+                            >
+                              ↑
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="demo-controls">
+                          <span>
+                            Demo uses fixed stubs, not a conversational model.
+                          </span>
+                          <button
+                            type="button"
+                            disabled={active || operation}
+                            onClick={() =>
+                              void perform(() =>
+                                run.spec
+                                  ? api.execute(run.id)
+                                  : api.plan(run.id),
+                              )
+                            }
+                          >
+                            {run.spec ? "Run real Python" : "Prepare demo plan"}
+                          </button>
+                          {active ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void perform(() => api.cancel(run.id))
+                              }
+                            >
+                              Stop
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
+                      <details className="diagnostic-log">
+                        <summary>
+                          Operational log · {events.length} events
+                        </summary>
+                        <div>
+                          {events.map((event) => (
+                            <div key={event.id}>
+                              <time>
+                                {new Date(event.at).toLocaleTimeString()}
+                              </time>
+                              <span>{event.type}</span>
+                              <pre>{event.message}</pre>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    </div>
+                    {view === "plan" ? (
+                      <div className="document-scroll">
+                        <PlanView
+                          run={run}
+                          onApprove={approvePlan}
+                          onChat={() => {
+                            setView("chat");
+                            textarea.current?.focus();
+                          }}
+                          disabled={operation || !!snapshot?.activeId}
+                        />
+                      </div>
+                    ) : null}
+                    {view === "files" ? (
+                      <div className="document-scroll">
+                        <FilesView api={api} run={run} />
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </section>
+              {splitPaper && paperRun ? (
+                <>
+                  <div
+                    className="paper-divider"
+                    role="separator"
+                    aria-label="PDF pane width"
+                    aria-orientation="vertical"
+                    aria-valuemin={30}
+                    aria-valuemax={65}
+                    aria-valuenow={Math.round(paperWidth)}
+                    tabIndex={0}
+                    onPointerDown={(event) =>
+                      event.currentTarget.setPointerCapture(event.pointerId)
+                    }
+                    onPointerMove={(event) => {
+                      if (
+                        !event.currentTarget.hasPointerCapture(event.pointerId)
+                      )
+                        return;
+                      const rect =
+                        event.currentTarget.parentElement!.getBoundingClientRect();
+                      setPaperWidth(
+                        Math.min(
+                          65,
+                          Math.max(
+                            30,
+                            ((rect.right - event.clientX) / rect.width) * 100,
+                          ),
+                        ),
+                      );
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "ArrowLeft" ||
+                        event.key === "ArrowRight"
+                      ) {
+                        event.preventDefault();
+                        setPaperWidth((previous) =>
+                          Math.min(
+                            65,
+                            Math.max(
+                              30,
+                              previous + (event.key === "ArrowLeft" ? 2 : -2),
+                            ),
+                          ),
+                        );
+                      }
+                    }}
+                  />
+                  <Suspense
+                    fallback={
+                      <aside className="paper-pane paper-loading">
+                        Loading source reader…
+                      </aside>
+                    }
+                  >
+                    <PaperPane
+                      key={paperRun.id}
+                      run={paperRun}
+                      page={paperPage}
+                      quote={paperQuote}
+                      onPage={(page) => {
+                        setPaperPage(page);
+                        setPaperQuote("");
+                      }}
+                      onQuote={discussQuote}
+                      onClose={() => setPaperOpen(false)}
+                    />
+                  </Suspense>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </main>
+      </div>
+    </PaperContext.Provider>
+  );
+}
+
+export function App() {
+  const api = getApi();
+  return api ? (
+    <AppShell api={api} />
+  ) : (
+    <div className="bridge-unavailable">
+      <h1>Open Paper2Experiment in Electron.</h1>
+      <p>The browser preview cannot access the research harness.</p>
+      <code>npm run dev</code>
     </div>
   );
 }

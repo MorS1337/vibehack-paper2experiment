@@ -60,6 +60,9 @@ export async function importSource(run: ExperimentRun, signal: AbortSignal): Pro
   // Runs in the dedicated harness utility process, never the renderer/main event loop.
   const document = await getDocument({ data: bytes, isEvalSupported: false, useSystemFonts: true }).promise;
   try {
+    const metadata = await document.getMetadata().catch(() => null);
+    const info = metadata?.info as { Title?: unknown } | undefined;
+    const title = typeof info?.Title === 'string' && info.Title.trim() && !/^(untitled|anonymous)$/i.test(info.Title.trim()) ? info.Title.trim().slice(0, 300) : undefined;
     const pages: SourceDocument['pages'] = [];
     for (let index = 1; index <= document.numPages; index++) {
       signal.throwIfAborted();
@@ -71,7 +74,7 @@ export async function importSource(run: ExperimentRun, signal: AbortSignal): Pro
     const textPath = path.join(folder, 'extracted.txt');
     await writeFile(textPath, pages.map(p => `[PAGE ${p.page}]\n${p.text}`).join('\n\n'));
     await writeFile(path.join(folder, 'pages.json'), JSON.stringify(pages, null, 2));
-    return { original, textPath, pages, sha256 };
+    return { original, textPath, pages, sha256, title };
   } finally { await document.destroy(); }
 }
 export function validateSourceRefs(spec: ExperimentSpec, source: SourceDocument): void {

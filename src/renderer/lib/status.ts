@@ -184,7 +184,7 @@ export const COMPONENT_META: Record<ConnectionStatus['component'], ComponentMeta
   pi: {
     label: 'Pi',
     purpose: 'Планирование и реализация эксперимента',
-    instruction: 'Укажите провайдера и модель Pi. Авторизация выполняется в CLI Pi, ключи здесь не хранятся.'
+    instruction: 'Войдите через «Войти в Pi» ниже, выберите модель и сохраните настройки. CLI Pi и переменные окружения также поддерживаются.'
   },
   jev: {
     label: 'JEV',
