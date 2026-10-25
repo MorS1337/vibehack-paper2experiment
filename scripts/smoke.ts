@@ -1,9 +1,11 @@
-import { cp, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { LocalBackend } from '../src/compute/local.js';
+import { executionEnv, isProcessAlive, runProcess } from '../src/compute/process.js';
 import { collectAndValidate } from '../src/core/artifacts.js';
 import { Store } from '../src/core/store.js';
 import { SpecSchema } from '../src/shared/types.js';
@@ -14,208 +16,250 @@ const referenceDir = path.join(repoRoot, 'demos/bernoulli-hoeffding/reference');
 const demoSpec = SpecSchema.parse(JSON.parse(await readFile(path.join(repoRoot, 'demos/bernoulli-hoeffding/spec.json'), 'utf8'))) as ExperimentSpec;
 
 const input: ExperimentInput = {
-  agentMode: 'demo',
-  source: 'https://arxiv.org/abs/1910.02884',
-  task: 'Bernoulli/Hoeffding local smoke run',
-  mode: 'local',
-  timeSeconds: 60,
-  maxHourlyUSD: 0,
-  maxTotalUSD: 0,
-  cleanup: 'destroy'
+  agentMode: 'demo', source: 'https://arxiv.org/abs/1910.02884',
+  task: 'Bernoulli/Hoeffding local smoke run', mode: 'local', timeSeconds: 120,
+  maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy'
 };
 
 interface SmokeContext {
   store: Store;
   run: ExperimentRun;
-  spec: ExperimentSpec;
   backend: LocalBackend;
+  controller: AbortController;
   ctx: ComputeContext;
+  running?: Promise<unknown>;
 }
 
-async function buildContext(root: string, spec: ExperimentSpec, task: string, explicitProjectDir?: string): Promise<SmokeContext> {
+const contexts: SmokeContext[] = [];
+
+async function buildContext(root: string, spec: ExperimentSpec, task: string): Promise<SmokeContext> {
   const store = new Store(root);
   await store.load();
-  const run = await store.create({ ...input, task });
-  const projectDir = explicitProjectDir ?? path.join(run.dir, 'project');
+  store.settings.python = process.env.PYTHON ?? store.settings.python;
+  const run = await store.create({ ...input, task, timeSeconds: spec.limits.timeSeconds });
   await store.patch(run.id, {
-    spec,
-    status: 'preparing',
+    spec, status: 'preparing',
     deadlineAt: new Date(Date.now() + spec.limits.timeSeconds * 1000).toISOString()
   });
   const controller = new AbortController();
   const ctx: ComputeContext = {
-    run,
-    spec,
-    projectDir,
-    signal: controller.signal,
+    run, spec, projectDir: path.join(run.dir, 'project'), signal: controller.signal,
     settings: store.settings,
     emit: async (type: RunEvent['type'], message: string) => {
       console.log(`[${task}] ${type}: ${message}`);
       await store.event(run.id, type, message);
     },
     persist: async (patch: Partial<ExperimentRun>) => {
-      Object.assign(run, patch);
       await store.patch(run.id, patch);
     }
   };
-  return { store, run, spec, backend: new LocalBackend(), ctx };
+  const context = { store, run, backend: new LocalBackend(), controller, ctx };
+  contexts.push(context);
+  return context;
 }
 
-async function copyDemoProject(run: ExperimentRun): Promise<string> {
-  const projectDir = path.join(run.dir, 'project');
-  await cp(referenceDir, projectDir, { recursive: true, force: true });
-  await rm(path.join(projectDir, 'artifacts'), { recursive: true, force: true });
-  await rm(path.join(projectDir, '.venv'), { recursive: true, force: true });
-  await rm(path.join(projectDir, '__pycache__'), { recursive: true, force: true });
-  await writeFile(path.join(projectDir, 'plan.json'), JSON.stringify(demoSpec, null, 2) + '\n');
-  return projectDir;
+async function copyDemoProject(context: SmokeContext): Promise<void> {
+  const { ctx } = context;
+  await mkdir(ctx.projectDir, { recursive: true });
+  // Copy only committed inputs, never a developer's cached venv or old outputs.
+  for (const file of ['main.py', 'experiment.json', 'requirements.txt']) {
+    await copyFile(path.join(referenceDir, file), path.join(ctx.projectDir, file));
+  }
+  await writeFile(path.join(ctx.projectDir, 'config.json'), JSON.stringify(ctx.spec.parameters, null, 2) + '\n');
+  await writeFile(path.join(ctx.projectDir, 'plan.json'), JSON.stringify(ctx.spec, null, 2) + '\n');
 }
 
-async function prepareAndRun(context: SmokeContext): Promise<{ exitCode: number; stderr: string }> {
-  await context.backend.prepare(context.ctx);
-  await context.ctx.persist({ status: 'running' });
-  return context.backend.run(context.ctx);
+async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Probe did not settle within ${timeoutMs}ms`)), timeoutMs); })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function waitForLog(projectDir: string, text: string, timeoutMs = 8000): Promise<boolean> {
+async function waitForLog(projectDir: string, text: string, timeoutMs = 8000): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    try {
-      if ((await readFile(path.join(projectDir, 'stdout.log'), 'utf8')).includes(text)) return true;
-    } catch {
-      // The process may not have created stdout.log yet.
-    }
+    const log = await readFile(path.join(projectDir, 'stdout.log'), 'utf8').catch(() => '');
+    if (log.includes(text)) return;
     await delay(50);
   }
-  return false;
+  throw new Error(`Python did not write readiness marker: ${text}`);
 }
 
-// The full Harness requires a real pi plan, so these probes exercise the same
-// ComputeBackend operations the harness uses: cancel kills the real process,
-// and the timeout probe mirrors the harness deadline timer by calling cancel.
-async function cancellationProbe(root: string): Promise<void> {
-  const projectTemplate = await mkdtemp(path.join(root, 'probe-project-'));
-  const projectDir = path.join(projectTemplate, 'project');
-  await cp(referenceDir, projectDir, { recursive: true, force: true });
-  await rm(path.join(projectDir, 'artifacts'), { recursive: true, force: true });
-  await writeFile(path.join(projectDir, 'main.py'), [
-    'import time',
-    'print("cancel-probe-started", flush=True)',
-    'time.sleep(30)',
-    'print("cancel-probe-finished", flush=True)',
-    ''
-  ].join('\n'));
-  await writeFile(path.join(projectDir, 'experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json'] }, null, 2));
+async function historyProbe(context: SmokeContext): Promise<void> {
+  const { store, run } = context;
+  const event = await store.event(run.id, 'log', 'smoke: completed run persisted');
+  const reopened = new Store(store.root);
+  await reopened.load();
+  const restored = reopened.get(run.id);
+  assert.equal(restored.status, 'completed');
+  assert.equal(restored.artifactsCollected, true);
+  assert.deepEqual(restored.spec, run.spec);
+  // Metrics use a null-prototype map in memory; JSON persistence restores a
+  // regular object. Compare the persisted numeric content, not its prototype.
+  assert.deepEqual(restored.metrics, JSON.parse(JSON.stringify(run.metrics)));
+  assert.deepEqual(restored.artifacts, run.artifacts);
+  assert.equal(restored.verification, run.verification);
+  assert.equal(restored.command, run.command);
+  assert.ok((await reopened.events(run.id)).some(item => item.id === event.id && item.message === event.message));
+  console.log('history: completed state, metrics, artifact hashes, plan, command and events restored');
+}
 
-  const context = await buildContext(root, demoSpec, 'cancellation probe', projectDir);
+async function reproducibilityProbe(root: string, spec: ExperimentSpec, task: string): Promise<void> {
+  const context = await buildContext(root, spec, task);
+  const { backend, ctx, store, run } = context;
+  await copyDemoProject(context);
+  await backend.prepare(ctx);
+  await ctx.persist({ status: 'running' });
+  const execution = await backend.run(ctx);
+  assert.equal(execution.exitCode, 0, execution.stderr);
+  await backend.collectArtifacts(ctx);
+  const first = await collectAndValidate(run);
+  assert.equal(await backend.getStatus(ctx), 'stopped');
+  assert.ok(first.artifacts.length > 0);
+
+  // Run the actual saved command from another cwd. The temporary project path
+  // contains spaces, and no previous outputs may satisfy the second validation.
+  assert.ok(run.command, 'LocalBackend must record a rerun command');
+  const command = run.command;
+  const configBefore = await readFile(path.join(ctx.projectDir, 'config.json'), 'utf8');
+  await rm(path.join(ctx.projectDir, 'artifacts'), { recursive: true });
+  const repeated = await runProcess('/bin/sh', ['-c', command], {
+    cwd: repoRoot, env: executionEnv(), timeoutMs: spec.limits.timeSeconds * 1000
+  });
+  assert.equal(repeated.exitCode, 0, repeated.stderr);
+  const second = await collectAndValidate(run);
+  const samplesHash = (result: typeof first) => {
+    const samples = result.artifacts.find(artifact => artifact.path === 'project/artifacts/samples.csv');
+    assert.ok(samples, 'Missing samples.csv digest');
+    return samples.sha256;
+  };
+  assert.equal(samplesHash(first), samplesHash(second), 'Same plan/config/seed changed the sample counts');
+  assert.deepEqual(second.metrics, first.metrics, 'Independently recomputed metrics changed on rerun');
+  assert.equal(await readFile(path.join(ctx.projectDir, 'config.json'), 'utf8'), configBefore);
+  assert.deepEqual(JSON.parse(await readFile(path.join(ctx.projectDir, 'plan.json'), 'utf8')), spec);
+  console.log(JSON.stringify({
+    probe: 'reproducibility', task, parameters: spec.parameters, samplesSHA256: samplesHash(second),
+    primaryMetric: second.metrics[spec.metric.name], tailCount: second.metrics.tail_count_primary
+  }, null, 2));
+  console.log(second.verification);
+  await store.patch(run.id, { ...second, artifactsCollected: true, status: 'completed' });
+  await historyProbe(context);
+  await backend.cleanup(ctx);
+}
+
+async function sleepingProject(root: string, task: string): Promise<SmokeContext> {
+  const context = await buildContext(root, demoSpec, task);
+  await copyDemoProject(context);
+  await writeFile(path.join(context.ctx.projectDir, 'main.py'), [
+    'import time', 'print("probe-started", flush=True)', 'time.sleep(30)',
+    'print("probe-finished", flush=True)', ''
+  ].join('\n'));
   await context.backend.prepare(context.ctx);
   await context.ctx.persist({ status: 'running' });
-  const stdoutHook = context.backend.streamLogs(context.ctx, line => console.log(`[cancel stdout] ${line}`));
-  const runPromise = context.backend.run(context.ctx).catch(error => ({ exitCode: -1, stderr: String(error) }));
-  const started = await waitForLog(projectDir, 'cancel-probe-started');
-  await context.backend.cancel(context.ctx);
-  const result = await Promise.race([runPromise, delay(15000).then(() => ({ exitCode: -2, stderr: 'cancel probe timed out after 15s' }))]);
-  stdoutHook();
-  let alive = false;
-  if (context.run.pid) {
-    try { process.kill(context.run.pid, 0); alive = true; } catch { alive = false; }
-  }
-  const status = await context.backend.getStatus(context.ctx);
-  console.log(JSON.stringify({ probe: 'cancellation', started, exitCode: result.exitCode, pid: context.run.pid, processStillAlive: alive, status }, null, 2));
-  if (result.exitCode === -2) throw new Error('Cancellation probe did not finish');
-  if (alive) throw new Error(`Cancelled process ${context.run.pid} is still alive`);
-  await context.backend.cleanup(context.ctx).catch(error => console.log(`cleanup after cancel: ${String(error)}`));
+  return context;
+}
+
+async function assertStopped(context: SmokeContext): Promise<void> {
+  assert.ok(context.run.pid, 'Probe must have launched a real process');
+  assert.equal(isProcessAlive(context.run.pid), false, `Process ${context.run.pid} is still alive`);
+  assert.equal(await context.backend.getStatus(context.ctx), 'stopped');
+  assert.doesNotMatch(await readFile(path.join(context.ctx.projectDir, 'stdout.log'), 'utf8'), /probe-finished/);
+}
+
+async function cancellationProbe(root: string): Promise<void> {
+  const context = await sleepingProject(root, 'cancellation probe');
+  const { backend, ctx, controller } = context;
+  // Observe rejections immediately; assertions/cleanup still await the outcome.
+  const outcome = backend.run(ctx).then(result => ({ result, error: undefined }), error => ({ result: undefined, error }));
+  context.running = outcome;
+  await waitForLog(ctx.projectDir, 'probe-started');
+  const reason = new Error('smoke: explicit cancellation');
+  controller.abort(reason);
+  await within(backend.cancel(ctx), 15_000);
+  const settled = await within(outcome, 15_000);
+  assert.equal(settled.error, reason, 'Cancellation must propagate the abort reason');
+  await assertStopped(context);
+  await backend.cleanup(ctx);
+  console.log('cancellation: ready Python process stopped and run rejected');
 }
 
 async function timeoutProbe(root: string): Promise<void> {
-  const projectTemplate = await mkdtemp(path.join(root, 'timeout-project-'));
-  const projectDir = path.join(projectTemplate, 'project');
-  await cp(referenceDir, projectDir, { recursive: true, force: true });
-  await rm(path.join(projectDir, 'artifacts'), { recursive: true, force: true });
-  await writeFile(path.join(projectDir, 'main.py'), [
-    'import time',
-    'print("timeout-probe-started", flush=True)',
-    'time.sleep(30)',
-    'print("timeout-probe-finished", flush=True)',
-    ''
-  ].join('\n'));
-  await writeFile(path.join(projectDir, 'experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json'] }, null, 2));
-
-  const context = await buildContext(root, demoSpec, 'timeout probe', projectDir);
-  await context.backend.prepare(context.ctx);
-  await context.ctx.persist({ status: 'running' });
+  const context = await sleepingProject(root, 'timeout probe');
+  const { backend, ctx } = context;
+  // Exercise LocalBackend's own deadline, without an external cancel timer.
+  await ctx.persist({ deadlineAt: new Date(Date.now() + 3000).toISOString() });
   const startedAt = Date.now();
-  let timedOut = false;
-  let cancellation: Promise<void> = Promise.resolve();
-  let cancellationError: unknown;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    cancellation = context.backend.cancel(context.ctx).catch(error => { cancellationError = error; });
-  }, 1200);
-  const result = await Promise.race([
-    context.backend.run(context.ctx).catch(error => ({ exitCode: -1, stderr: String(error) })),
-    delay(15000).then(() => ({ exitCode: -2, stderr: 'timeout probe did not stop within 15s' }))
-  ]);
-  clearTimeout(timer);
-  await cancellation;
-  if (cancellationError) throw cancellationError;
-  const elapsedMs = Date.now() - startedAt;
-  const status = await context.backend.getStatus(context.ctx);
-  let alive = false;
-  if (context.run.pid) {
-    try { process.kill(context.run.pid, 0); alive = true; } catch { alive = false; }
+  const outcome = backend.run(ctx);
+  context.running = outcome;
+  void outcome.catch(() => undefined);
+  await waitForLog(ctx.projectDir, 'probe-started');
+  const result = await within(outcome, 15_000);
+  assert.equal(result.exitCode, 124, result.stderr);
+  assert.ok(Date.now() - startedAt < 15_000, 'Deadline was not enforced');
+  await assertStopped(context);
+  await backend.cleanup(ctx);
+  console.log('timeout: backend deadline stopped ready Python process with exit 124');
+}
+
+async function saveFailureDiagnostics(): Promise<void> {
+  const destination = process.env.PAPER2_SMOKE_DIAGNOSTICS;
+  if (!destination) return;
+  // Explicit allowlist from this script's generated projects only. Never copy
+  // Store settings, user state, the venv, environment dumps, credentials or audio.
+  const files = ['plan.json', 'config.json', 'experiment.json', 'stdout.log', 'stderr.log',
+    'artifacts/metrics.json', 'artifacts/samples.csv', 'artifacts/plot.svg'];
+  for (const [index, context] of contexts.entries()) {
+    for (const file of files) {
+      const source = path.join(context.ctx.projectDir, file);
+      const info = await lstat(source).catch(() => undefined);
+      if (!info?.isFile() || info.size > 64 * 1024 * 1024) continue;
+      const target = path.join(destination, `probe-${index + 1}`, file);
+      await mkdir(path.dirname(target), { recursive: true });
+      await copyFile(source, target);
+    }
   }
-  console.log(JSON.stringify({ probe: 'timeout', timedOut, exitCode: result.exitCode, elapsedMs, pid: context.run.pid, processStillAlive: alive, status }, null, 2));
-  if (!timedOut) throw new Error('Timeout probe timer did not fire');
-  if (result.exitCode === -2) throw new Error('Timed-out process did not stop');
-  if (alive) throw new Error(`Timed-out process ${context.run.pid} is still alive`);
-  await context.backend.cleanup(context.ctx).catch(error => console.log(`cleanup after timeout: ${String(error)}`));
+  console.log(`smoke: failure diagnostics saved to ${destination}`);
 }
 
-async function historyProbe(root: string, store: Store, run: ExperimentRun): Promise<void> {
-  await store.event(run.id, 'log', 'smoke: completed run persisted');
-  const reopened = new Store(root);
-  await reopened.load();
-  const restored = reopened.get(run.id);
-  const events = await reopened.events(run.id);
-  console.log(JSON.stringify({
-    probe: 'history',
-    status: restored.status,
-    hasMetrics: !!restored.metrics && Number.isFinite(restored.metrics.empirical_tail_probability),
-    artifactCount: restored.artifacts.length,
-    events: events.length,
-    artifactsCollected: restored.artifactsCollected
-  }, null, 2));
-  if (!restored.metrics || restored.artifacts.length === 0) throw new Error('History reload lost metrics or artifacts');
+async function main(root: string): Promise<void> {
+  console.log(`smoke root: ${root}`);
+  console.log('Reference plan/code are explicit demo stubs; Python execution is real. No LLM, Jev, Vast or paid API.');
+  await reproducibilityProbe(root, demoSpec, 'default demo');
+  const editedSpec = SpecSchema.parse({
+    ...demoSpec,
+    parameters: { p: 0.35, epsilon: 0.12, n_values: [12, 24, 48], trials_per_n: 256, seed: 17, primary_n: 24, tail_side: 'greater' }
+  });
+  await reproducibilityProbe(root, editedSpec, 'edited plan');
+  await cancellationProbe(root);
+  await timeoutProbe(root);
+  console.log('smoke: completed all real local probes');
 }
 
-async function main(): Promise<void> {
-  // LocalBackend rejects project paths that resolve through a symlink; on macOS
-  // os.tmpdir() is often /var/folders, whose /var is a symlink to /private/var.
-  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'paper2-smoke-')));
+const root = await realpath(await mkdtemp(path.join(tmpdir(), 'paper2 smoke ')));
+try {
   try {
-    console.log(`smoke root: ${root}`);
-    console.log('No LLM, Jev, Vast or paid API is called by this smoke script.');
-    const first = await buildContext(root, demoSpec, 'demo run');
-    await copyDemoProject(first.run);
-    const execution = await prepareAndRun(first);
-    console.log(JSON.stringify({ phase: 'execution', exitCode: execution.exitCode, stderrTail: execution.stderr.slice(-2000) }, null, 2));
-    if (execution.exitCode !== 0) throw new Error(`demo exited with ${execution.exitCode}: ${execution.stderr.slice(-4000)}`);
-    await first.backend.collectArtifacts(first.ctx);
-    const validated = await collectAndValidate(first.run);
-    await first.store.patch(first.run.id, { ...validated, artifactsCollected: true, status: 'completed' });
-    console.log('Independent recomputation and metrics:');
-    console.log(JSON.stringify(validated.metrics, null, 2));
-    console.log(validated.verification);
-    await historyProbe(root, first.store, first.run);
-    await first.backend.cleanup(first.ctx);
-    await cancellationProbe(root);
-    await timeoutProbe(root);
-    console.log('smoke: completed all real local probes');
+    await main(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
-    console.log('smoke: temporary directories removed');
+    // Stop every probe before removing files, even when an assertion fails.
+    const cleanup = await Promise.allSettled(contexts.map(async context => {
+      context.controller.abort(new Error('smoke cleanup'));
+      await context.backend.cancel(context.ctx);
+      await context.running?.catch(() => undefined);
+      await context.backend.cleanup(context.ctx);
+    }));
+    const failures = cleanup.filter(result => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Smoke cleanup failed');
   }
+} catch (error) {
+  await saveFailureDiagnostics().catch(diagnosticError => console.error('Diagnostic export failed:', diagnosticError));
+  throw error;
+} finally {
+  await rm(root, { recursive: true, force: true });
+  console.log('smoke: temporary directories removed');
 }
-
-await main();
