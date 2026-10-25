@@ -6,6 +6,7 @@ import type { PiLoginMethod, PiLoginNotice, PiLoginPrompt, PiLoginState, PiProvi
 
 type Interaction = Parameters<ModelRuntime['login']>[2];
 type Prompt = Parameters<Interaction['prompt']>[0];
+const NATIVE_LOGIN_HELP = 'Для API-ключа или ручного кода откройте терминал, запустите pi и выполните /login. Вводите секреты только там; либо настройте штатную переменную окружения провайдера перед запуском приложения. Затем обновите статусы в настройках.';
 interface Login {
   state: PiLoginState;
   controller: AbortController;
@@ -47,6 +48,7 @@ export class PiAuth {
 
   start(provider: string, method: PiLoginMethod): PiLoginState {
     if (this.busy) throw new Error('Уже выполняется вход в Pi');
+    if (method !== 'oauth') throw new Error(NATIVE_LOGIN_HELP);
     const login: Login = {
       state: { id: randomUUID(), provider, status: 'pending', notices: [] },
       controller: new AbortController(), done: Promise.resolve()
@@ -62,7 +64,7 @@ export class PiAuth {
       const runtime = await this.createRuntime(login.controller.signal);
       login.controller.signal.throwIfAborted();
       const provider = runtime.getProvider(login.state.provider);
-      if (!provider || (method === 'oauth' ? !provider.auth.oauth : !provider.auth.apiKey?.login)) {
+      if (!provider?.auth.oauth) {
         throw new Error('Unsupported login method');
       }
       const deviceId = method === 'oauth' ? await this.deviceId() : undefined;
@@ -78,7 +80,7 @@ export class PiAuth {
     } catch {
       // Provider exceptions may contain entered secrets or token responses. Never forward them.
       login.state.status = login.controller.signal.aborted ? 'cancelled' : 'failed';
-      if (login.state.status === 'failed') login.state.error = 'Pi не завершил вход. Проверьте данные и доступность провайдера, затем повторите.';
+      if (login.state.status === 'failed') login.state.error = `Pi не завершил вход. Проверьте доступность провайдера. ${NATIVE_LOGIN_HELP}`;
     } finally {
       clearTimeout(timeout);
       login.answer?.reject(new Error('Вход завершён'));
@@ -91,10 +93,20 @@ export class PiAuth {
   private prompt(login: Login, prompt: Prompt): Promise<string> {
     const signal = prompt.signal ? AbortSignal.any([login.controller.signal, prompt.signal]) : login.controller.signal;
     signal.throwIfAborted();
+    // A manual-code prompt races the browser callback in some OAuth providers.
+    // Keep that callback alive, but never expose a credential-entry prompt to React.
+    if (prompt.type !== 'select') {
+      if (prompt.type !== 'manual_code') return Promise.reject(new Error(NATIVE_LOGIN_HELP));
+      login.state.notices = [...login.state.notices.slice(-19), { type: 'info', message: `Можно завершить вход через браузер. Если нужен ручной код, отмените вход здесь. ${NATIVE_LOGIN_HELP}` }];
+      const { promise, reject } = Promise.withResolvers<string>();
+      const abort = () => reject(new Error('Запрос отменён'));
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      return promise;
+    }
     const id = randomUUID();
     const publicPrompt: PiLoginPrompt = { id, type: prompt.type, message: prompt.message };
-    if ('placeholder' in prompt) publicPrompt.placeholder = prompt.placeholder;
-    if (prompt.type === 'select') publicPrompt.options = prompt.options.map(option => ({ ...option }));
+    publicPrompt.options = prompt.options.map(option => ({ ...option }));
     login.state.prompt = publicPrompt;
     const { promise, resolve, reject } = Promise.withResolvers<string>();
     const clear = () => {
@@ -117,7 +129,7 @@ export class PiAuth {
     const state = this.state(id);
     const answer = this.login?.answer;
     if (state.status !== 'pending' || !answer || answer.id !== promptId) throw new Error('Запрос входа уже завершён');
-    if (state.prompt?.type === 'select' && !state.prompt.options?.some(option => option.id === value)) throw new Error('Недопустимый вариант');
+    if (state.prompt?.type !== 'select' || !state.prompt.options?.some(option => option.id === value)) throw new Error('Недопустимый вариант');
     answer.resolve(value);
   }
 

@@ -46,6 +46,8 @@ interface Props {
   onStart: (input: ExperimentInput) => Promise<void>;
   onReplace: () => void;
   passage: { page: number; quote: string } | null;
+  stage: "paper" | "brief";
+  onStageChange: (stage: "paper" | "brief") => void;
 }
 
 export function NewExperiment({
@@ -56,14 +58,15 @@ export function NewExperiment({
   onStart,
   onReplace,
   disabled,
+  stage,
+  onStageChange: setStage,
 }: Props) {
-  const [stage, setStage] = useState<"paper" | "brief">("paper");
   const [source, setSource] = useState(paper?.input.source ?? "");
   const [objective, setObjective] = useState("");
   const [context, setContext] = useState("");
   const [mode, setMode] = useState<ExperimentInput["mode"]>("local");
   const [agentMode, setAgentMode] =
-    useState<ExperimentInput["agentMode"]>("pi");
+    useState<ExperimentInput["agentMode"]>("demo");
   const [time, setTime] = useState(300);
   const [hourly, setHourly] = useState(0);
   const [total, setTotal] = useState(0);
@@ -75,6 +78,9 @@ export function NewExperiment({
   const voice = useVoiceTask(api, (transcript) =>
     setContext((value) => (value ? `${value}\n${transcript}` : transcript)),
   );
+  useEffect(() => {
+    if (stage !== "brief") voice.cancel();
+  }, [stage, voice.cancel]);
   useEffect(() => {
     if (paper) setSource(paper.input.source);
   }, [paper?.id]);
@@ -112,6 +118,7 @@ export function NewExperiment({
   const start = async (event: FormEvent) => {
     event.preventDefault();
     if (!paper?.source) return;
+    if (disabled || working || voice.phase !== "idle") return;
     setWorking(true);
     setError("");
     try {
@@ -136,14 +143,6 @@ export function NewExperiment({
   };
   return (
     <div className={`new-experiment intake-${stage}`}>
-      <ol className="intake-stages" aria-label="New experiment stages">
-        <li aria-current={stage === "paper" ? "step" : undefined}>
-          <span>01</span> The paper
-        </li>
-        <li aria-current={stage === "brief" ? "step" : undefined}>
-          <span>02</span> Research brief
-        </li>
-      </ol>
       {stage === "paper" ? (
         <>
           <ResearchField />
@@ -263,6 +262,7 @@ export function NewExperiment({
               {paper?.source?.title ?? paper?.title}{" "}
               <span>· {paper?.source?.pages.length} pages</span>
             </div>
+            {agentMode === "demo" ? <p role="note">Fixed local demo: the protocol and code are built-in stubs for the Bernoulli–Hoeffding example; Python execution and measurements are real. Select “Pi · real model” below for model-generated research. No API key is needed for the demo.</p> : null}
           </div>
           <form onSubmit={(event) => void start(event)}>
             <label className="field-label" htmlFor="new-objective">
@@ -292,7 +292,7 @@ export function NewExperiment({
               <button
                 type="button"
                 disabled={
-                  voice.phase === "requesting" || voice.phase === "transcribing"
+                  disabled || working || voice.phase === "requesting" || voice.phase === "transcribing"
                 }
                 onClick={() =>
                   void (voice.phase === "recording"
@@ -300,16 +300,23 @@ export function NewExperiment({
                     : voice.start())
                 }
               >
-                {voice.phase === "recording"
-                  ? "Stop recording"
-                  : voice.phase === "transcribing"
-                    ? "Transcribing…"
-                    : "Dictate context"}
+                {voice.phase === "requesting"
+                  ? "Requesting microphone…"
+                  : voice.phase === "recording"
+                    ? `Stop recording · ${voice.elapsed}s / ${voice.remaining}s left`
+                    : voice.phase === "transcribing"
+                      ? "Transcribing…"
+                      : "Dictate context"}
               </button>
+              {voice.phase !== "idle" ? (
+                <button type="button" onClick={voice.cancel}>Cancel dictation</button>
+              ) : null}
+              {voice.device ? <span role="status">{voice.device}</span> : null}
               {paper?.input.source.includes("1910.02884") ? (
                 <button
                   type="button"
                   onClick={() => {
+                    setAgentMode("demo");
                     setObjective(
                       "Independently check the Bernoulli–Hoeffding one-sided bound with the built-in demo artifact contract. This is a theorem check, not reproduction of a published numerical value.",
                     );
@@ -444,7 +451,7 @@ export function NewExperiment({
               <button
                 className="primary-button"
                 type="submit"
-                disabled={disabled || working || !objective.trim()}
+                disabled={disabled || working || voice.phase !== "idle" || !objective.trim()}
               >
                 {working
                   ? "Starting research…"

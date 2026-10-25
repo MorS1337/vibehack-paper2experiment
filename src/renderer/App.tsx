@@ -26,16 +26,22 @@ import { NewExperiment } from "./components/NewExperiment.js";
 import { RichMessage } from "./components/RichMessage.js";
 import { STATUS_META } from "./lib/status.js";
 import { PaperContext } from "./lib/paper-context.js";
+import { useVoiceTask } from "./hooks/useVoiceTask.js";
 
 // PDF rendering is a browser-only, on-demand surface, not part of the initial UI bundle.
 const PaperPane = lazy(() => import("./components/PaperPane.js"));
 import "./styles.css";
 
 type View = "chat" | "plan" | "files" | "settings" | "new";
-const views: { id: View; label: string; glyph: string; shortcut: number }[] = [
-  { id: "chat", label: "Research", glyph: "↳", shortcut: 1 },
-  { id: "plan", label: "Protocol", glyph: "≡", shortcut: 2 },
-  { id: "files", label: "Evidence", glyph: "⌘", shortcut: 4 },
+const views: {
+  id: "chat" | "plan" | "paper" | "files";
+  label: string;
+  shortcut: number;
+}[] = [
+  { id: "chat", label: "Research", shortcut: 1 },
+  { id: "plan", label: "Protocol", shortcut: 2 },
+  { id: "paper", label: "Paper", shortcut: 3 },
+  { id: "files", label: "Evidence", shortcut: 4 },
 ];
 
 function mergeBlocks(
@@ -289,6 +295,7 @@ function AppShell({ api }: { api: AppAPI }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("chat");
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [intakeStage, setIntakeStage] = useState<"paper" | "brief">("paper");
   const [paperOpen, setPaperOpen] = useState(true);
   const [paperPage, setPaperPage] = useState(1);
   const [paperQuote, setPaperQuote] = useState("");
@@ -311,6 +318,10 @@ function AppShell({ api }: { api: AppAPI }) {
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
   const selected = useRef(selectedId);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const voice = useVoiceTask(api, (text) =>
+    setDraft((previous) => previous ? `${previous}\n${text}` : text),
+  );
+  useEffect(() => { voice.cancel(); }, [selectedId, view, voice.cancel]);
   selected.current = selectedId;
   const refresh = useCallback(async () => {
     const next = await api.snapshot();
@@ -403,6 +414,7 @@ function AppShell({ api }: { api: AppAPI }) {
   useEffect(() => {
     if (run && !run.input.task && view === "chat") {
       setDraftId(run.id);
+      setIntakeStage("paper");
       setView("new");
     }
   }, [run?.id, run?.input.task, view]);
@@ -427,6 +439,7 @@ function AppShell({ api }: { api: AppAPI }) {
   const paperNavigation = useMemo(() => ({ cite }), [cite]);
   const newExperiment = () => {
     setDraftId(null);
+    setIntakeStage("paper");
     setBriefPassage(null);
     setView("new");
     setError("");
@@ -465,7 +478,7 @@ function AppShell({ api }: { api: AppAPI }) {
   };
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!run || !draft.trim() || operation || otherActive) return;
+    if (!run || !draft.trim() || operation || otherActive || voice.phase !== "idle") return;
     const text = draft;
     setDraft("");
     const ok = await perform(() => api.sendMessage(run.id, text, delivery));
@@ -490,6 +503,7 @@ function AppShell({ api }: { api: AppAPI }) {
   const importPaper = async (source: string) => {
     const imported = await api.importPaper(source);
     setDraftId(imported.id);
+    setIntakeStage("paper");
     setSelectedId(imported.id);
     setBriefPassage(null);
     setView("new");
@@ -517,6 +531,7 @@ function AppShell({ api }: { api: AppAPI }) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         setDraftId(null);
+        setIntakeStage("paper");
         setBriefPassage(null);
         setView("new");
       }
@@ -577,6 +592,7 @@ function AppShell({ api }: { api: AppAPI }) {
                   setSelectedId(item.id);
                   if (!item.input.task) {
                     setDraftId(item.id);
+                    setIntakeStage("paper");
                     setView("new");
                   } else setView("chat");
                   setError("");
@@ -595,30 +611,6 @@ function AppShell({ api }: { api: AppAPI }) {
               </button>
             ))}
           </div>
-          {run && !showNew ? (
-            <nav className="vertical-tabs" aria-label="Experiment views">
-              {views.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  aria-current={view === item.id ? "page" : undefined}
-                  className={view === item.id ? "selected" : ""}
-                  onClick={() => setView(item.id)}
-                >
-                  <span className="nav-glyph">{item.glyph}</span>
-                  {item.label}
-                  <kbd>⌘{item.shortcut}</kbd>
-                </button>
-              ))}
-              <button
-                type="button"
-                aria-pressed={paperOpen}
-                onClick={() => setPaperOpen((previous) => !previous)}
-              >
-                <span className="nav-glyph">▤</span>Source paper<kbd>⌘3</kbd>
-              </button>
-            </nav>
-          ) : null}
           <div className="rail-bottom">
             <button
               type="button"
@@ -636,41 +628,111 @@ function AppShell({ api }: { api: AppAPI }) {
         </aside>
         <main className="main-surface">
           <header className="workspace-heading">
-            <div>
-              <span className="header-location">
-                {showNew
-                  ? "New experiment"
-                  : view === "settings"
-                    ? "Settings"
-                    : run?.title}
-              </span>
-              {run && !showNew && view !== "settings" ? (
-                <span className="header-state">
+            {view === "settings" ? (
+              <span className="header-location">Settings</span>
+            ) : showNew ? (
+              <div className="intake-header">
+                <span className="header-location">New experiment</span>
+                <ol
+                  className="intake-stages"
+                  aria-label="New experiment stages"
+                >
+                  <li
+                    aria-current={intakeStage === "paper" ? "step" : undefined}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setIntakeStage("paper")}
+                    >
+                      <span>01</span> Paper
+                    </button>
+                  </li>
+                  <li
+                    aria-current={intakeStage === "brief" ? "step" : undefined}
+                  >
+                    <button
+                      type="button"
+                      disabled={!newPaper?.source}
+                      onClick={() => setIntakeStage("brief")}
+                    >
+                      <span>02</span> Research brief
+                    </button>
+                  </li>
+                </ol>
+              </div>
+            ) : (
+              <nav className="workspace-tabs" aria-label="Experiment views">
+                {views.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={
+                      item.id === "paper"
+                        ? "paper-toggle"
+                        : view === item.id
+                          ? "is-current"
+                          : ""
+                    }
+                    aria-current={
+                      item.id !== "paper" && view === item.id
+                        ? "page"
+                        : undefined
+                    }
+                    aria-pressed={item.id === "paper" ? paperOpen : undefined}
+                    disabled={item.id === "paper" && !run?.source}
+                    title={
+                      item.id === "paper"
+                        ? `${paperOpen ? "Hide" : "Show"} source PDF · ⌘3`
+                        : `${item.label} · ⌘${item.shortcut}`
+                    }
+                    onClick={() => {
+                      if (item.id === "paper")
+                        setPaperOpen((previous) => !previous);
+                      else setView(item.id);
+                    }}
+                  >
+                    {item.id === "paper" ? (
+                      <span className="paper-toggle-mark" aria-hidden="true">
+                        ▤
+                      </span>
+                    ) : null}
+                    {item.label}
+                    {item.id === "plan" && run?.spec ? (
+                      <span className="tab-detail">v{run.planVersion}</span>
+                    ) : null}
+                    {item.id === "files" && run?.verification ? (
+                      <span
+                        className="evidence-mark"
+                        aria-label="Verification available"
+                      />
+                    ) : null}
+                  </button>
+                ))}
+              </nav>
+            )}
+            <div className="heading-actions">
+              {showNew ? (
+                hasPaper ? (
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    onClick={() => setPaperOpen((previous) => !previous)}
+                    aria-pressed={paperOpen}
+                  >
+                    {paperOpen ? "Hide paper" : "Show paper"} ▤
+                  </button>
+                ) : (
+                  <span className="header-state">
+                    {newPaper?.status === "importing"
+                      ? "Importing source…"
+                      : "Source first"}
+                  </span>
+                )
+              ) : run && view !== "settings" ? (
+                <span className="header-state" title={run.title}>
                   {active ? "Working" : STATUS_META[run.status].label}
                 </span>
               ) : null}
-            </div>
-            <div className="heading-actions">
-              {hasPaper ? (
-                <button
-                  type="button"
-                  className="quiet-button"
-                  onClick={() => setPaperOpen((previous) => !previous)}
-                  aria-pressed={paperOpen}
-                >
-                  {paperOpen ? "Hide paper" : "Show paper"} ▤
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="quiet-button"
-                onClick={() =>
-                  void refresh().catch((cause) => setError(errorMessage(cause)))
-                }
-                aria-label="Refresh state"
-              >
-                ↻
-              </button>
             </div>
           </header>
           {error ? (
@@ -712,37 +774,6 @@ function AppShell({ api }: { api: AppAPI }) {
               }
             >
               <section className="research-workbench">
-                {!showNew && run ? (
-                  <div
-                    className="research-progress"
-                    aria-label="Reproduction workflow"
-                  >
-                    <span className={run.source ? "is-done" : ""}>
-                      01 Paper
-                    </span>
-                    <span className={run.spec ? "is-done" : "is-current"}>
-                      02 Protocol{run.spec ? ` · v${run.planVersion}` : ""}
-                    </span>
-                    <span
-                      className={
-                        run.status === "running"
-                          ? "is-current"
-                          : run.metrics
-                            ? "is-done"
-                            : ""
-                      }
-                    >
-                      03 Experiment
-                    </span>
-                    <button
-                      type="button"
-                      className={run.verification ? "is-done" : ""}
-                      onClick={() => setView("files")}
-                    >
-                      04 Evidence ↗
-                    </button>
-                  </div>
-                ) : null}
                 {showNew ? (
                   <div className="document-scroll">
                     <NewExperiment
@@ -750,6 +781,8 @@ function AppShell({ api }: { api: AppAPI }) {
                       api={api}
                       paper={newPaper}
                       passage={briefPassage}
+                      stage={intakeStage}
+                      onStageChange={setIntakeStage}
                       onImport={importPaper}
                       onStart={startResearch}
                       onReplace={newExperiment}
@@ -886,6 +919,8 @@ function AppShell({ api }: { api: AppAPI }) {
                               }
                             }}
                           />
+                          {voice.error ? <p className="error-text" role="alert">{voice.error}</p> : null}
+                          {voice.phase !== "idle" ? <p role="status">{voice.phase === "requesting" ? "Requesting microphone…" : voice.phase === "transcribing" ? "Transcribing…" : `${voice.device} · ${voice.elapsed}s recorded · ${voice.remaining}s left`}</p> : null}
                           <div className="composer-footer">
                             <button
                               className="model-button"
@@ -897,6 +932,14 @@ function AppShell({ api }: { api: AppAPI }) {
                               {snapshot?.settings.piModel || "available model"}
                             </button>
                             <span className="composer-spacer" />
+                            <button
+                              type="button"
+                              disabled={otherActive || operation || voice.phase === "requesting" || voice.phase === "transcribing"}
+                              onClick={() => void (voice.phase === "recording" ? voice.stop() : voice.start())}
+                            >
+                              {voice.phase === "recording" ? "Stop recording" : "Dictate"}
+                            </button>
+                            {voice.phase !== "idle" ? <button type="button" onClick={voice.cancel}>Cancel dictation</button> : null}
                             {active ? (
                               <>
                                 <select
@@ -937,7 +980,7 @@ function AppShell({ api }: { api: AppAPI }) {
                               className="send-button"
                               type="submit"
                               disabled={
-                                !draft.trim() || operation || otherActive
+                                !draft.trim() || operation || otherActive || voice.phase !== "idle"
                               }
                               aria-label={
                                 active ? "Queue message" : "Send message"

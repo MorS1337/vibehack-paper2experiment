@@ -40,8 +40,9 @@ port.on('message', async ({ data }: { data: { id: number; method: string; args: 
       case 'authLink': result = harness.piAuth.authLink(idSchema.parse(args[0]), z.string().max(16384).parse(args[1])); break;
       case 'transcribe': {
         if (!(args[0] instanceof ArrayBuffer) || args[0].byteLength > 2_000_000) throw new Error('Недопустимая запись; максимум 60 секунд PCM WAV');
-        result = await harness.transcribe(args[0]); break;
+        result = await harness.transcribe(args[0], idSchema.parse(args[1])); break;
       }
+      case 'cancelTranscription': result = await harness.cancelTranscription(idSchema.parse(args[0])); break;
       case 'events': result = await harness.store.events(idSchema.parse(args[0])); break;
       case 'folder': result = harness.store.get(idSchema.parse(args[0])).dir; break;
       case 'shutdown': result = await harness.shutdown(); break;

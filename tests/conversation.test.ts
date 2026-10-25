@@ -56,6 +56,8 @@ test('artifact previews reject traversal, session storage, directory symlinks, a
     await assert.rejects(readArtifactPreview(run, 'project/../session/private.txt'), /Invalid artifact path/);
     await assert.rejects(readArtifactPreview(run, 'session/private.txt'), /outside/);
     await assert.rejects(readArtifactPreview(run, 'project/linked/private.txt'), /Symlink/);
+    await symlink(path.join(run.dir, 'session', 'private.txt'), path.join(run.dir, 'project', 'private.txt'));
+    await assert.rejects(readArtifactPreview(run, 'project/private.txt'), /Symlink/);
     await assert.rejects(readArtifactPreview(run, 'project/large.txt'), /512 KiB/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

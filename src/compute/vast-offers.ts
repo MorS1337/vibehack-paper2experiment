@@ -1,6 +1,9 @@
 import type { ComputeTarget, ExperimentSpec } from '../shared/types.js';
 
 export const VAST_IMAGE = 'pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime';
+// Keep these requirements aligned with the supported container image.
+const VAST_IMAGE_CPU_ARCH = 'amd64';
+const VAST_IMAGE_MIN_CUDA = 12.4;
 export const VAST_RELIABILITY_MIN = 0.98;
 export const VAST_MAX_CANDIDATES = 6;
 export const VAST_BOOT_RESERVE_SECONDS = 900;
@@ -14,6 +17,9 @@ export interface VastOffer {
   cpuRamMB: number;
   gpuRamMB: number;
   diskSpaceGB: number;
+  cpuArch: string;
+  cudaMax: number;
+  directPortCount: number;
   dphTotal: number;
   storageCostPerGBMonth: number;
   inetDownCostPerGB: number;
@@ -61,6 +67,9 @@ export function normalizeVastOffer(raw: unknown): VastOffer | null {
   const gpuRamMB = finiteNumber(object.gpu_ram);
   const diskSpaceGB = finiteNumber(object.disk_space);
   const dphTotal = finiteNumber(object.dph_total);
+  const cpuArch = typeof object.cpu_arch === 'string' ? object.cpu_arch : '';
+  const cudaMax = finiteNumber(object.cuda_max_good);
+  const directPortCount = finiteNumber(object.direct_port_count);
   const storageCost = finiteNumber(object.storage_cost);
   const inetDown = finiteNumber(object.inet_down_cost);
   const inetUp = finiteNumber(object.inet_up_cost);
@@ -76,6 +85,8 @@ export function normalizeVastOffer(raw: unknown): VastOffer | null {
   if (gpuRamMB === null || gpuRamMB <= 0) return null;
   if (diskSpaceGB === null || diskSpaceGB <= 0) return null;
   if (dphTotal === null || dphTotal <= 0) return null;
+  if (!cpuArch || cudaMax === null || cudaMax <= 0) return null;
+  if (directPortCount === null || !Number.isSafeInteger(directPortCount) || directPortCount < 0) return null;
   if (storageCost === null || storageCost < 0) return null;
   if (inetDown === null || inetDown < 0) return null;
   if (inetUp === null || inetUp < 0) return null;
@@ -91,6 +102,9 @@ export function normalizeVastOffer(raw: unknown): VastOffer | null {
     cpuRamMB,
     gpuRamMB,
     diskSpaceGB,
+    cpuArch,
+    cudaMax,
+    directPortCount,
     dphTotal,
     storageCostPerGBMonth: storageCost,
     inetDownCostPerGB: inetDown,
@@ -117,6 +131,7 @@ export function evaluateVastOffer(raw: unknown, spec: ExperimentSpec, options: V
   if (!Number.isFinite(transferGB) || transferGB < 0) return null;
   if (!Number.isFinite(bootSeconds) || bootSeconds < 0) return null;
   if (!offer.verified || !offer.rentable || offer.reliability < reliabilityMin) return null;
+  if (offer.cpuArch !== VAST_IMAGE_CPU_ARCH || offer.cudaMax < VAST_IMAGE_MIN_CUDA || offer.directPortCount < 1) return null;
   if (offer.numGpus !== 1) return null;
   if (offer.cpuCores < spec.requirements.cpuCores) return null;
   const ramGB = offer.cpuRamMB / 1024;
@@ -156,6 +171,9 @@ export function evaluateVastOffer(raw: unknown, spec: ExperimentSpec, options: V
       verified: offer.verified,
       rentable: offer.rentable,
       offerDiskGB: offer.diskSpaceGB,
+      cpuArch: offer.cpuArch,
+      cudaMax: offer.cudaMax,
+      directPortCount: offer.directPortCount,
       offerDphTotalUSD: offer.dphTotal,
       storageCostPerGBMonthUSD: offer.storageCostPerGBMonth,
       storageHourlyUSD,
@@ -199,6 +217,9 @@ export function vastSearchBody(spec: ExperimentSpec, options: VastFilterOptions 
     rented: { eq: false },
     num_gpus: { eq: 1 },
     gpu_arch: { eq: 'nvidia' },
+    cpu_arch: { eq: VAST_IMAGE_CPU_ARCH },
+    cuda_max_good: { gte: VAST_IMAGE_MIN_CUDA },
+    direct_port_count: { gte: 1 },
     reliability: { gte: reliabilityMin },
     cpu_cores_effective: { gte: spec.requirements.cpuCores },
     cpu_ram: { gte: cpuRamMB },

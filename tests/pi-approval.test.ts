@@ -9,6 +9,7 @@ import baseline from "../demos/bernoulli-hoeffding/spec.json" with { type: "json
 import { SpecSchema } from "../src/shared/types.js";
 import { Store, defaultSettings } from "../src/core/store.js";
 import { converseWithPi } from "../src/integrations/pi.js";
+import { readConversation } from "../src/core/conversation.js";
 
 test("one persistent conversation rejects writes before approval and again after approval is revoked", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "p2e-approval-"));
@@ -156,6 +157,10 @@ test("one persistent conversation rejects writes before approval and again after
       code: "ENOENT",
     });
     assert.match(results[2], /not been approved/);
+    assert.ok(run.sessionFile);
+    const history = readConversation(run);
+    assert.equal(history.blocks.filter(block => block.kind === "user").length, 3);
+    assert.equal(history.blocks.filter(block => block.kind === "tool" && block.tool === "write" && block.state === "error").length, 2);
   } finally {
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

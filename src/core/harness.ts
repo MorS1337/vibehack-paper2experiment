@@ -33,11 +33,14 @@ interface Active {
 export class Harness {
   readonly piAuth: PiAuth;
   private active?: Active;
-  private transcription?: { controller: AbortController; promise: Promise<string> };
+  private stopping = false;
+  private planSaving?: Promise<ExperimentSpec>;
+  private transcription?: { id: string; controller: AbortController; promise: Promise<string> };
   private listeners = new Set<(event: RunEvent) => void>();
   private conversationListeners = new Set<(update: ConversationUpdate) => void>();
   constructor(readonly store: Store) { this.piAuth = new PiAuth(undefined, path.join(store.root, 'pi-device-id')); }
   startPiLogin(provider: string, method: PiLoginMethod) {
+    if (this.stopping) throw new Error('Приложение закрывается');
     if (this.active) throw new Error('Сначала завершите активную операцию');
     return this.piAuth.start(provider, method);
   }
@@ -70,8 +73,9 @@ export class Harness {
     return { runs: this.store.list(), activeId: this.active?.id, settings, connections };
   }
   private launch(id: string, work: (active: Active) => Promise<void>): void {
+    if (this.stopping) throw new Error('Приложение закрывается');
     if (this.piAuth.busy) throw new Error('Сначала завершите вход в Pi');
-    if (this.active) throw new Error('Уже выполняется другая операция. Сначала остановите её');
+    if (this.active || this.planSaving) throw new Error('Уже выполняется другая операция. Сначала остановите её');
     const active: Active = { id, controller: new AbortController(), timedOut: false, queued: [], executionAttempts: 0, executed: false };
     this.active = active;
     active.promise = work(active).catch(async error => {
@@ -79,7 +83,7 @@ export class Harness {
       const message = error instanceof Error ? error.message : String(error);
       const status = active.timedOut ? 'timed_out' : active.controller.signal.aborted ? 'cancelled' : error instanceof SetupRequiredError ? 'needs_setup' : 'failed';
       // A failed follow-up cannot erase a previously verified scientific result.
-      await this.status(id, run.status === 'completed' && !active.executionAttempts ? 'completed' : status, { error: message });
+      await this.status(id, run.status === 'completed' ? 'completed' : status, { error: message });
       await this.emit(id, 'error', message);
     }).finally(async () => {
       if (this.active === active) this.active = undefined;
@@ -151,7 +155,10 @@ export class Harness {
       }
       return;
     }
-    this.launch(id, async active => {
+    this.launch(id, active => this.conversationWork(run, active, text));
+  }
+  private async conversationWork(run: ExperimentRun, active: Active, text: string): Promise<void> {
+      const id = run.id;
       const previousStatus = run.status;
       if (!run.source) {
         await this.status(id, 'importing', { error: undefined });
@@ -162,6 +169,7 @@ export class Harness {
       if (['draft', 'failed', 'needs_setup', 'interrupted', 'cancelled'].includes(run.status)) await this.status(id, 'planning', { error: undefined });
       // Announce work even when the scientific run's state is already completed/ready.
       await this.emit(id, 'agent', 'Pi продолжает разговор');
+      try {
       const answer = await converseWithPi({
         run, settings: this.store.settings, signal: active.controller.signal, projectDir: path.join(run.dir, 'project'), queued: active.queued,
         emit: (type, message) => this.emit(id, type, message), persist: patch => this.store.patch(id, patch),
@@ -179,17 +187,25 @@ export class Harness {
         await this.store.patch(id, { report: answer });
       }
       if (run.status === 'planning' || run.status === 'coding') await this.status(id, previousStatus === 'completed' ? 'completed' : run.spec ? run.spec.missing.length ? 'needs_data' : 'ready' : 'draft');
-    });
+      } finally {
+        // A fresh chat turn must not reset the repair allowance under an old approval.
+        if (active.executionAttempts) await this.store.patch(id, { approvedPlanVersion: undefined });
+      }
   }
   async plan(id: string): Promise<void> {
     const run = this.store.get(id);
+    if (!run.input.task.trim()) throw new Error('Provide a research brief for the imported paper before planning.');
     if (run.input.agentMode === 'pi') return this.sendMessage(id, run.sessionFile ? 'Review the current task and propose the next scientific plan for my approval.' : run.input.task);
     if (run.instanceId || run.provisioningUncertain) throw new Error('Сначала разрешите незавершённую аренду');
     this.launch(id, async active => {
-      await this.status(id, 'importing', { error: undefined });
-      const source = await importSource(run, active.controller.signal);
-      await this.store.patch(id, { source });
-      await this.emit(id, 'artifact', `Источник сохранён: SHA256 ${source.sha256}; страниц ${source.pages.length}`);
+      if (!run.source) {
+        await this.status(id, 'importing', { error: undefined });
+        const source = await importSource(run, active.controller.signal);
+        await this.store.patch(id, { source });
+        await this.emit(id, 'artifact', `Источник сохранён: SHA256 ${source.sha256}; страниц ${source.pages.length}`);
+      } else {
+        await sourcePdfPath(run);
+      }
       await this.commitPlan(run, demoPlan(run), false);
       await this.emit(id, 'agent', 'ДЕМО / ЗАГЛУШКА: фиксированный план, модель не вызывалась');
     });
@@ -207,32 +223,44 @@ export class Harness {
     return spec;
   }
   async savePlan(id: string, input: unknown): Promise<void> {
-    if (this.active) throw new Error('Во время операции план изменять нельзя');
-    await this.commitPlan(this.store.get(id), input, true);
+    if (this.stopping) throw new Error('Приложение закрывается');
+    if (this.active || this.planSaving) throw new Error('Во время операции план изменять нельзя');
+    const saving = this.commitPlan(this.store.get(id), input, true);
+    this.planSaving = saving;
+    try { await saving; }
+    finally { if (this.planSaving === saving) this.planSaving = undefined; }
   }
   async execute(id: string): Promise<void> {
-    if (this.active) throw new Error('Сначала дождитесь ответа агента или остановите его');
+    if (this.active || this.planSaving) throw new Error('Сначала дождитесь ответа агента или остановите его');
     const run = this.store.get(id);
     if (!run.spec || !run.source) throw new Error('Сначала сформируйте план');
     if (run.spec.missing.length) throw new Error('В плане остались недостающие сведения');
     const issues = planIssues(run.spec, run);
     if (issues.length) throw new Error(issues.join('; '));
     if (run.instanceId || run.provisioningUncertain) throw new Error('Сначала разрешите незавершённую аренду');
-    if (run.input.agentMode === 'demo') { this.launch(id, async active => { await this.executeWork(run, active); }); return; }
     if (!['ready', 'failed', 'needs_setup', 'cancelled', 'timed_out', 'interrupted'].includes(run.status)) throw new Error('Для нового запуска сначала предложите новую версию плана');
-    const projectDir = path.join(run.dir, 'project');
-    if (run.executionStarted) {
-      await rename(projectDir, path.join(run.dir, `project-archive-${Date.now()}`));
-      await this.store.patch(id, { executionStarted: false });
-    }
-    await mkdir(projectDir, { recursive: true });
-    await atomicJSON(path.join(projectDir, 'plan.json'), run.spec);
-    await this.store.patch(id, { approvedPlanVersion: run.planVersion });
-    await this.sendMessage(id, `I approve scientific plan v${run.planVersion}. Implement it using the current contract from get_experiment, then call run_experiment. Explain and visualize the actual results. Do not change the science or limits.`);
+    this.launch(id, async active => {
+      const projectDir = path.join(run.dir, 'project');
+      // Reserve the global operation before touching an earlier execution's workspace.
+      try {
+        await readFile(path.join(projectDir, 'experiment.json'));
+        await rename(projectDir, path.join(run.dir, `project-archive-${Date.now()}-${randomUUID()}`));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      active.controller.signal.throwIfAborted();
+      await mkdir(projectDir, { recursive: true });
+      await atomicJSON(path.join(projectDir, 'plan.json'), run.spec);
+      await this.store.patch(id, { approvedPlanVersion: run.planVersion, executionStarted: false });
+      if (run.input.agentMode === 'demo') await this.executeWork(run, active);
+      else await this.conversationWork(run, active, `I approve scientific plan v${run.planVersion}. Implement it using the current contract from get_experiment, then call run_experiment. Explain and visualize the actual results. Do not change the science or limits.`);
+    });
   }
 
   private async executeWork(run: ExperimentRun, active: Active): Promise<unknown> {
     const id = run.id;
+    active.controller.signal.throwIfAborted();
+    if (active.executed) throw new Error('This approved execution already completed. Propose a new plan and obtain explicit approval before running again.');
     if (!run.spec || !run.source) throw new Error('План и источник обязательны');
     if (run.input.agentMode === 'demo' && run.input.mode !== 'local') throw new Error('Демо никогда не арендует ресурсы');
     if (run.input.agentMode === 'pi' && run.approvedPlanVersion !== run.planVersion) throw new Error('Требуется подтверждение текущей версии плана');
@@ -343,15 +371,24 @@ export class Harness {
     });
   }
   async saveSettings(settings: unknown): Promise<void> { if (this.active) throw new Error('Нельзя менять настройки во время операции'); await this.store.saveSettings(SettingsSchema.parse(settings)); }
-  async transcribe(audio: ArrayBuffer): Promise<string> {
+  async transcribe(audio: ArrayBuffer, requestId: string): Promise<string> {
+    if (this.stopping) throw new Error('Приложение закрывается');
     if (this.transcription) throw new Error('Уже выполняется расшифровка');
     const controller = new AbortController();
     const promise = transcribe(new Uint8Array(audio), this.store.settings, controller.signal);
-    this.transcription = { controller, promise };
+    this.transcription = { id: requestId, controller, promise };
     try { return await promise; } finally { if (this.transcription?.promise === promise) this.transcription = undefined; }
   }
+  async cancelTranscription(requestId: string): Promise<void> {
+    const transcription = this.transcription;
+    if (!transcription || transcription.id !== requestId) return;
+    transcription.controller.abort(new Error('Расшифровка отменена'));
+    await transcription.promise.catch(() => undefined);
+  }
   async shutdown(): Promise<void> {
+    this.stopping = true;
     const operations: Promise<unknown>[] = [this.piAuth.shutdown()];
+    if (this.planSaving) operations.push(this.planSaving.catch(() => undefined));
     if (this.transcription) { this.transcription.controller.abort(new Error('Приложение закрывается')); operations.push(this.transcription.promise.catch(() => undefined)); }
     if (this.active) operations.push(this.cancel(this.active.id));
     await Promise.all(operations);

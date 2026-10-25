@@ -37,7 +37,62 @@ test('an incompatible demo primary metric is rejected before protocol approval o
     assert.equal(run.planVersion, 0);
     assert.equal(run.spec, undefined);
     await harness.savePlan(run.id, spec);
-    assert.equal(run.spec?.metric.name, 'empirical_tail_probability');
+    assert.equal(store.get(run.id).spec?.metric.name, 'empirical_tail_probability');
     assert.equal(run.approvedPlanVersion, undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('execution reserves the global operation before asynchronous workspace preparation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'p2e-execution-lock-'));
+  const store = new Store(root); await store.load();
+  const harness = new Harness(store);
+  try {
+    const run = await store.create(input);
+    const spec = SpecSchema.parse(baseline);
+    await store.patch(run.id, { status: 'ready', spec, planVersion: spec.version, source: { original: 'fixture.pdf', textPath: 'fixture.txt', sha256: 'fixture', pages: spec.sourceRefs.map(ref => ({ page: ref.page, text: ref.quote })) } });
+    const saving = harness.savePlan(run.id, spec);
+    await assert.rejects(harness.execute(run.id), /дождитесь ответа/);
+    await saving;
+    await harness.execute(run.id);
+    await assert.rejects(harness.execute(run.id), /дождитесь ответа/);
+    await harness.cancel(run.id);
+    assert.equal(store.get(run.id).status, 'cancelled');
+  } finally {
+    await harness.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('completed fixed demo cannot silently execute again without a new reviewed plan', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'p2e-demo-completed-'));
+  try {
+    const store = new Store(root); await store.load();
+    const harness = new Harness(store);
+    const run = await store.create(input);
+    const spec = SpecSchema.parse(baseline);
+    await store.patch(run.id, { status: 'completed', spec, planVersion: spec.version, source: { original: 'fixture.pdf', textPath: 'fixture.txt', sha256: 'fixture', pages: spec.sourceRefs.map(ref => ({ page: ref.page, text: ref.quote })) } });
+    await assert.rejects(harness.execute(run.id), /новую версию плана/);
+    assert.equal(store.get(run.id).status, 'completed');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('shutdown waits for an in-flight plan save before returning', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'p2e-plan-shutdown-'));
+  const store = new Store(root); await store.load();
+  const harness = new Harness(store);
+  try {
+    const run = await store.create(input);
+    const spec = SpecSchema.parse(baseline);
+    await store.patch(run.id, { source: { original: 'fixture.pdf', textPath: 'fixture.txt', sha256: 'fixture', pages: spec.sourceRefs.map(ref => ({ page: ref.page, text: ref.quote })) } });
+    const saving = harness.savePlan(run.id, spec);
+    await harness.shutdown();
+    const restored = new Store(root); await restored.load();
+    assert.equal(restored.get(run.id).planVersion, 1);
+    assert.equal(restored.get(run.id).spec?.metric.name, spec.metric.name);
+    await saving;
+    await assert.rejects(harness.savePlan(run.id, spec), /закрывается/);
+  } finally {
+    await harness.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
 });

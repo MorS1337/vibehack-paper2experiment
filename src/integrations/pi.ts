@@ -227,7 +227,7 @@ async function createPiSession(context: PiAgentContext, options: {
   tools: string[];
   customTools?: ToolDefinition<any, any, any>[];
   signal: AbortSignal;
-}): Promise<{ session: AgentSession; close: () => void }> {
+}): Promise<{ session: AgentSession; close: () => Promise<void> }> {
   const selection = await selectPiModel(context.settings, options.signal);
   const smartcompact = smartCompactPackage();
   const loader = new DefaultResourceLoader({
@@ -289,12 +289,21 @@ async function createPiSession(context: PiAgentContext, options: {
   };
   const update = (block: ConversationBlock) => { changes.set(block.id, block); timer ??= setTimeout(flush, 60); };
   const unsubscribe = session.subscribe(event => {
-    if (manager.getSessionFile() !== context.run.sessionFile) void context.persist({ sessionFile: manager.getSessionFile() }).catch(error => { void emitSafe(context, 'error', errorMessage(error)); void session.abort(); });
+    const sessionFile = manager.getSessionFile();
+    if (sessionFile && sessionFile !== context.run.sessionFile && existsSync(sessionFile)) void context.persist({ sessionFile }).catch(error => { void emitSafe(context, 'error', errorMessage(error)); void session.abort(); });
     if (event.type === 'message_start' || event.type === 'message_update' || event.type === 'message_end') {
-      if (event.type === 'message_start' && event.message.role === 'user') {
+      if (event.type === 'message_end' && event.message.role === 'user') {
         const content = event.message.content;
         const delivered = typeof content === 'string' ? content : content.filter(part => part.type === 'text').map(part => part.text).join('\n');
-        void context.acknowledge(delivered).catch(error => { void emitSafe(context, 'error', errorMessage(error)); void session.abort(); });
+        // SDK 1.4 persists message_end immediately after notifying subscribers.
+        queueMicrotask(() => {
+          void (async () => {
+            const file = manager.getSessionFile();
+            if (!file || !existsSync(file)) throw new Error('Pi did not persist the delivered user message');
+            if (file !== context.run.sessionFile) await context.persist({ sessionFile: file });
+            await context.acknowledge(delivered);
+          })().catch(error => { void emitSafe(context, 'error', errorMessage(error)); void session.abort(); });
+        });
       }
       for (const block of messageBlocks(event.message, event.type !== 'message_end')) update(block);
     }
@@ -306,7 +315,7 @@ async function createPiSession(context: PiAgentContext, options: {
       const result = event.type === 'tool_execution_end' ? event.result : event.partialResult;
       const text = displayText(result?.content?.filter((part: { type: string }) => part.type === 'text').map((part: { text: string }) => part.text).join('\n') ?? '');
       const diff = result?.details?.diff;
-      const block: ConversationBlock = { ...tools.get(event.toolCallId), id: event.toolCallId, at: tools.get(event.toolCallId)?.at ?? Date.now(), kind: 'tool', tool: event.toolName, text: text + (typeof diff === 'string' ? `\n\n${diff}` : ''), state: event.type === 'tool_execution_end' ? event.isError ? 'error' : 'done' : 'running' };
+      const block: ConversationBlock = { ...tools.get(event.toolCallId), id: event.toolCallId, at: tools.get(event.toolCallId)?.at ?? Date.now(), kind: 'tool', tool: event.toolName, text: text + (typeof diff === 'string' ? `\n\n${displayText(diff)}` : ''), state: event.type === 'tool_execution_end' ? event.isError ? 'error' : 'done' : 'running' };
       if (event.type === 'tool_execution_end') {
         block.durationMs = event.durationMs;
         manager.appendCustomEntry('harness.tool', { id: block.id, durationMs: block.durationMs });
@@ -321,6 +330,18 @@ async function createPiSession(context: PiAgentContext, options: {
       void emitSafe(context, 'compaction', event.errorMessage ? `pi: компакция не удалась (${event.reason}): ${event.errorMessage}` : `pi завершил компакцию (${event.reason})${freed}${event.aborted ? ', прервана' : ''}.`);
     }
   });
+  const close = async () => {
+    flush();
+    unsubscribe();
+    try {
+      // Match SDK AgentSessionRuntime.dispose(): extensions release timers before invalidation.
+      if (session.extensionRunner.hasHandlers('session_shutdown')) {
+        await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      }
+    } finally {
+      session.dispose();
+    }
+  };
   try {
     await session.bindExtensions({
       mode: 'print',
@@ -332,18 +353,10 @@ async function createPiSession(context: PiAgentContext, options: {
       }
     });
   } catch (error) {
-    unsubscribe();
-    session.dispose();
+    await close();
     throw error;
   }
-  return {
-    session,
-    close: () => {
-      flush();
-      unsubscribe();
-      session.dispose();
-    }
-  };
+  return { session, close };
 }
 
 function abortMessage(deadline: Deadline, label: string, signal: AbortSignal): Error {
@@ -701,14 +714,22 @@ export async function converseWithPi(context: PiCodeAgentContext, text: string, 
     });
     session = opened.session;
     context.attach(session);
+    const running = promptPi(session, text, deadline, 'Pi', true);
+    // Observe immediately: queue delivery can fail while the provider is still running.
+    void running.catch(() => undefined);
     try {
-      const running = promptPi(session, text, deadline, 'Pi', true);
       for (const queued of context.queued.splice(0)) await session[queued.delivery](queued.text);
       return await running;
     } finally {
       context.attach(undefined);
-      await context.persist({ sessionFile: session.sessionFile });
-      opened.close();
+      try {
+        // Disposal is synchronous in SDK 1.4; abort() is the actual in-flight work barrier.
+        await session.abort();
+        await running.catch(() => undefined);
+        if (session.sessionFile && existsSync(session.sessionFile)) await context.persist({ sessionFile: session.sessionFile });
+      } finally {
+        await opened.close();
+      }
     }
   } catch (error) { throw asAgentError(error); }
   finally { deadline.cleanup(); }

@@ -46,6 +46,7 @@ async function download(url: URL, signal: AbortSignal): Promise<Uint8Array> {
   throw new Error('Слишком много перенаправлений источника');
 }
 export async function importSource(run: ExperimentRun, signal: AbortSignal): Promise<SourceDocument> {
+  signal.throwIfAborted();
   const folder = path.join(run.dir, 'source'); await mkdir(folder, { recursive: true });
   let bytes: Uint8Array;
   if (/^https?:\/\//.test(run.input.source) || !path.isAbsolute(run.input.source)) bytes = await download(arxivPDF(run.input.source), AbortSignal.any([signal, AbortSignal.timeout(90000)]));
@@ -54,6 +55,8 @@ export async function importSource(run: ExperimentRun, signal: AbortSignal): Pro
     if (!info.isFile() || info.size > MAX_PDF) throw new Error('Требуется PDF-файл не более 40 MiB');
     bytes = new Uint8Array(await readFile(run.input.source));
   }
+  signal.throwIfAborted();
+  if (bytes.byteLength > MAX_PDF) throw new Error('PDF превышает лимит импорта 40 MiB');
   if (!Buffer.from(bytes.subarray(0, 1024)).includes(Buffer.from('%PDF-'))) throw new Error('Источник не является PDF');
   const original = path.join(folder, 'document.pdf'); await writeFile(original, bytes);
   const sha256 = createHash('sha256').update(bytes).digest('hex');

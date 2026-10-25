@@ -71,11 +71,16 @@ test("paper draft preserves the original and locks source identity before accept
       harness.sendMessage(run.id, "Start coding"),
       /research brief/,
     );
+    await assert.rejects(harness.plan(run.id), /research brief/);
     const brief = {
       ...run.input,
       task: "Check the bound, distinguish theory from sampling uncertainty.",
       timeSeconds: 60,
     };
+    await assert.rejects(
+      harness.setBrief(run.id, { ...brief, agentMode: "demo", mode: "auto" }),
+      /Local only/,
+    );
     await assert.rejects(
       harness.setBrief(run.id, { ...brief, source: "/different.pdf" }),
       /imported paper/,
@@ -109,6 +114,21 @@ test("PDF access rejects changed bytes and symlink replacement, even when metada
     await rm(imported);
     await symlink(run.input.source, imported);
     await assert.rejects(sourcePdfPath(run), /symlinks/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cancelled source import stops before creating an imported document", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "p2e-paper-cancel-"));
+  try {
+    const store = new Store(path.join(root, "state"));
+    await store.load();
+    const run = await store.create({ agentMode: "pi", source: path.join(root, "missing.pdf"), task: "", mode: "local", timeSeconds: 60, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: "destroy" });
+    const controller = new AbortController();
+    controller.abort(new Error("import cancelled"));
+    await assert.rejects(importSource(run, controller.signal), /import cancelled/);
+    await assert.rejects(readFile(path.join(run.dir, "source", "document.pdf")), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

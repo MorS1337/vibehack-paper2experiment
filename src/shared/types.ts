@@ -99,7 +99,9 @@ export interface AppAPI {
   piLoginCancel(id: string): Promise<void>;
   openAuthLink(id: string, url: string): Promise<void>;
   choose(kind: 'pdf' | 'data' | 'model' | 'binary' | 'key'): Promise<string | null>;
-  transcribe(audio: ArrayBuffer): Promise<string>;
+  requestMicrophoneAccess(): Promise<void>;
+  transcribe(audio: ArrayBuffer, requestId: string): Promise<string>;
+  cancelTranscription(requestId: string): Promise<void>;
   events(id: string): Promise<RunEvent[]>;
   openFolder(id: string): Promise<void>;
   onEvent(listener: (event: RunEvent) => void): () => void;
