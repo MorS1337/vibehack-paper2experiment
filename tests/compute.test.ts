@@ -57,6 +57,9 @@ function makeOffer(overrides: Record<string, unknown> = {}): Record<string, unkn
     verified: true,
     verification: 'verified',
     rentable: true,
+    cpu_arch: 'amd64',
+    cuda_max_good: 12.4,
+    direct_port_count: 1,
     geolocation: 'Test, US',
     ...overrides
   };
@@ -158,6 +161,22 @@ test('Vast filter converts units, counts all-in price once and enforces network 
   gpuSpec.requirements.vramGB = 24;
   assert.ok(evaluateVastOffer(makeOffer({ gpu_ram: 24576 }), gpuSpec, { bootSeconds: 0, transferGB: 0 }));
   assert.equal(evaluateVastOffer(makeOffer({ gpu_ram: 16000 }), gpuSpec, { bootSeconds: 0, transferGB: 0 }), null);
+});
+
+test('Vast rejects hosts incompatible with the fixed amd64/CUDA image or direct SSH', () => {
+  const spec = makeSpec();
+  const offers = [
+    makeOffer(),
+    makeOffer({ id: 2001, cuda_max_good: 12.2 }),
+    makeOffer({ id: 2002, cuda_max_good: null }),
+    makeOffer({ id: 2003, direct_port_count: 0 }),
+    makeOffer({ id: 2004, direct_port_count: null }),
+    makeOffer({ id: 2005, direct_port_count: 0.5 }),
+    makeOffer({ id: 2006, cpu_arch: 'arm64' }),
+    makeOffer({ id: 2007, cpu_arch: null })
+  ];
+  const targets = selectVastTargets(offers, spec, { bootSeconds: 0, transferGB: 0 });
+  assert.deepEqual(targets.map(target => target.offerId), [1001]);
 });
 
 test('Vast selection is sorted by all-in cost and capped at six candidates', () => {

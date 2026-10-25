@@ -197,7 +197,7 @@ export class VastBackend implements ComputeBackend {
 
   private async revalidateOffer(client: VastApiClient, ctx: ComputeContext, target: ComputeTarget & { offerId: number }): Promise<VastEvaluation> {
     const offers = await client.searchOffers({
-      id: { eq: target.offerId }, type: 'ondemand', verified: { eq: true }, rentable: { eq: true }, rented: { eq: false },
+      ask_contract_id: { eq: target.offerId }, type: 'ondemand', verified: { eq: true }, rentable: { eq: true }, rented: { eq: false },
       allocated_storage: Math.max(16, Math.ceil(ctx.spec.requirements.diskGB)), limit: 5
     }, { signal: ctx.signal, timeoutMs: 20_000 });
     const raw = offers.find(offer => offer && typeof offer === 'object' && 'id' in offer && offer.id === target.offerId);

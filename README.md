@@ -142,10 +142,17 @@ chmod 600 ~/.ssh/paper2_vast
 `pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime`.
 
 До Jev код фильтрует фактические предложения по CPU/RAM/VRAM/disk, надёжности,
-verified/rentable и бюджетам. `dph_total` учитывается один раз как all-in тариф
+verified/rentable, архитектуре amd64, CUDA ≥ 12.4, доступности direct SSH и бюджетам.
+Неизвестные параметры совместимости отклоняются. `dph_total` учитывается один раз как all-in тариф
 заданного `allocated_storage`. Оценка содержит резерв setup/экспорта и сети.
 Выбранное предложение перепроверяется перед созданием; увеличение утверждённого
 тарифа требует нового выбора. Платный запуск — только после отдельного approval.
+Точечный запрос использует `ask_contract_id`: на проверенном Vast API фильтр `id`
+не находит тот же offer, хотя в ответе `id` совпадает с `ask_contract_id`.
+Фиксированный образ опубликован только для Linux/amd64:
+[метаданные Docker Hub](https://hub.docker.com/v2/repositories/pytorch/pytorch/tags/2.4.0-cuda12.4-cudnn9-runtime).
+Проверка CUDA использует поле API `cuda_max_good` — это
+[реальное имя CLI-алиаса `cuda_vers`](https://github.com/vast-ai/vast-cli/blob/master/vast.py#L1035-L1037).
 
 ### Whisper: русский голосовой ввод
 
@@ -306,3 +313,17 @@ PDF не включён в репозиторий: fetch-скрипт скачи
 [Vast](https://docs.vast.ai/sdk/python/quickstart),
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
 [Electron security](https://www.electronjs.org/docs/latest/tutorial/security).
+
+## Параллельные задачи для команды
+
+Проверенный stub MVP опубликован в `main`. Можно брать независимые задачи:
+
+- [#5 Pi: настоящий путь от документа до кода и результата](https://github.com/MorS1337/vibehack-paper2experiment/issues/5)
+- [#4 Vast: live lifecycle, бюджет, SSH, отмена и cleanup](https://github.com/MorS1337/vibehack-paper2experiment/issues/4)
+- [#2 Jev: реальный выбор из допустимых compute-вариантов](https://github.com/MorS1337/vibehack-paper2experiment/issues/2)
+- [#3 Whisper: русский голосовой ввод и физический микрофон](https://github.com/MorS1337/vibehack-paper2experiment/issues/3)
+- [#1 CI: macOS/Linux и воспроизводимость локального исполнения](https://github.com/MorS1337/vibehack-paper2experiment/issues/1)
+
+В каждой issue указаны текущие факты, файлы, границы, checklist и критерии приёмки.
+Деморежим без ключей должен оставаться рабочим. Платная аренда — только с отдельным разрешением и бюджетом.
+
