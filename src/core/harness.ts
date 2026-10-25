@@ -15,6 +15,7 @@ import {
   planIssues,
 } from "../integrations/pi.js";
 import { transcribe, whisperStatus } from "../integrations/whisper.js";
+import { shutdownPythonKernels } from "../integrations/python-kernel.js";
 import { LocalBackend } from "../compute/local.js";
 import { VastBackend } from "../compute/vast.js";
 import { selectCompute, getComputeStatuses } from "../compute/index.js";
@@ -817,7 +818,10 @@ export class Harness {
     await transcription.promise.catch(() => undefined);
   }
   async shutdown(): Promise<void> {
-    const operations: Promise<unknown>[] = [this.piAuth.shutdown()];
+    const operations: Promise<unknown>[] = [
+      this.piAuth.shutdown(),
+      shutdownPythonKernels(),
+    ];
     if (this.transcription) {
       this.transcription.controller.abort(new Error("Приложение закрывается"));
       operations.push(this.transcription.promise.catch(() => undefined));
