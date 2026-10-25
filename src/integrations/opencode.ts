@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import net from 'node:net';
@@ -140,10 +141,14 @@ export function detectOpenCodeAuth(): OpenCodeAuth {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SetupRequiredError(`OpenCode: ${authPath} должен содержать JSON-объект`);
     for (const [provider, credential] of Object.entries(parsed)) {
       if (!credential || typeof credential !== 'object') continue;
-      if ('type' in credential || 'key' in credential || 'access' in credential || 'refresh' in credential) {
-        providers.add(provider);
-        sources.add('auth.json');
-      }
+      const key = 'key' in credential && typeof credential.key === 'string' && credential.key.trim().length > 0;
+      const apiKey = 'apiKey' in credential && typeof credential.apiKey === 'string' && credential.apiKey.trim().length > 0;
+      const access = 'access' in credential && typeof credential.access === 'string' && credential.access.trim().length > 0;
+      const refresh = 'refresh' in credential && typeof credential.refresh === 'string' && credential.refresh.trim().length > 0;
+      const token = 'token' in credential && typeof credential.token === 'string' && credential.token.trim().length > 0;
+      if (!(key || apiKey || access || refresh || token)) continue;
+      providers.add(provider);
+      sources.add('auth.json');
     }
   }
   for (const [variable, provider] of Object.entries(ENV_PROVIDERS)) {
@@ -178,6 +183,11 @@ export function redactSecrets(text: string, environment: NodeJS.ProcessEnv = pro
   return result;
 }
 
+function hasCredentialsForProvider(auth: OpenCodeAuth, providerID: string): boolean {
+  const wanted = providerID.trim().toLowerCase();
+  return auth.providers.some(provider => provider.toLowerCase() === wanted);
+}
+
 export function parseOpenCodeModel(value: string): { providerID: string; modelID: string } {
   const trimmed = value.trim();
   const slash = trimmed.indexOf('/');
@@ -195,7 +205,7 @@ export async function openCodeStatus(settings: AppSettings): Promise<ConnectionS
     }
     const model = settings.openCodeModel.trim();
     if (!model) return { component: 'opencode', state: 'needs_setup', detail: 'Укажите модель OpenCode в формате provider/model (например, openrouter/anthropic/claude-sonnet-4).' };
-    parseOpenCodeModel(model);
+    const selected = parseOpenCodeModel(model);
     const auth = detectOpenCodeAuth();
     if (!auth.providers.length) {
       return {
@@ -204,8 +214,15 @@ export async function openCodeStatus(settings: AppSettings): Promise<ConnectionS
         detail: `Учётные данные OpenCode не найдены (${auth.authPath}). Выполните ${binary.path} auth login; настройки pi и OpenCode независимы.`
       };
     }
+    if (!hasCredentialsForProvider(auth, selected.providerID)) {
+      return {
+        component: 'opencode',
+        state: 'needs_setup',
+        detail: `Для выбранной модели ${model} нет учётных данных провайдера «${selected.providerID}». OpenCode нашёл данные только для: ${auth.providers.join(', ')}. Выполните ${binary.path} auth login для нужного провайдера.`
+      };
+    }
     const source = auth.sources.includes('auth.json') && auth.sources.includes('environment') ? 'auth.json и переменные окружения' : auth.sources[0] === 'auth.json' ? 'auth.json' : 'переменные окружения';
-    return { component: 'opencode', state: 'ready', detail: `OpenCode ${binary.version}; провайдеры: ${auth.providers.join(', ')}; источник: ${source}; модель: ${model}` };
+    return { component: 'opencode', state: 'ready', detail: `OpenCode ${binary.version}; провайдер ${selected.providerID}: учётные данные найдены (${source}); провайдеры с данными: ${auth.providers.join(', ')}; модель: ${model}` };
   } catch (error) {
     return { component: 'opencode', state: error instanceof SetupRequiredError ? 'needs_setup' : 'error', detail: redactSecrets(error instanceof Error ? error.message : String(error)) };
   }
@@ -215,7 +232,6 @@ export interface OpenCodeServer {
   url: string;
   client: OpencodeClient;
   close: () => Promise<void>;
-  warning: string | undefined;
 }
 
 function freePort(): Promise<number> {
@@ -287,10 +303,13 @@ export async function startOpenCodeServer(options: StartServerOptions): Promise<
     },
     tools: { webfetch: false, websearch: false, task: false }
   };
+  const password = randomBytes(32).toString('hex');
   const env = {
     ...safeProcessEnv(process.env),
     XDG_DATA_HOME: dataHome,
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(config)
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+    OPENCODE_SERVER_USERNAME: 'opencode',
+    OPENCODE_SERVER_PASSWORD: password
   };
   const args = ['serve', `--hostname=127.0.0.1`, `--port=${port}`];
   const child = spawn(binary.path, args, {
@@ -353,15 +372,11 @@ export async function startOpenCodeServer(options: StartServerOptions): Promise<
     await stopProcess(child);
     throw error instanceof Error ? error : new Error(String(error));
   }
-  const warning = /OPENCODE_SERVER_PASSWORD is not set/i.test(captured)
-    ? 'OpenCode слушает только 127.0.0.1 без пароля; сервер живёт только на время вызова агента.'
-    : undefined;
   let closed = false;
-  const client = createOpencodeClient({ baseUrl: url, directory: options.projectDir });
+  const client = createOpencodeClient({ baseUrl: url, directory: options.projectDir, headers: { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` } });
   return {
     url,
     client,
-    warning,
     close: async () => {
       if (closed) return;
       closed = true;
@@ -399,11 +414,14 @@ function apiErrorText(error: unknown): string {
 }
 
 export async function runOpenCodeWorker(options: OpenCodeWorkerOptions): Promise<OpenCodeWorkerResult> {
+  const model = parseOpenCodeModel(options.settings.openCodeModel);
   const auth = detectOpenCodeAuth();
   if (!auth.providers.length) {
     throw new SetupRequiredError(`OpenCode: нет учётных данных (${auth.authPath}). Выполните opencode auth login; ключи pi сюда не копируются.`);
   }
-  const model = parseOpenCodeModel(options.settings.openCodeModel);
+  if (!hasCredentialsForProvider(auth, model.providerID)) {
+    throw new SetupRequiredError(`OpenCode: для модели ${options.settings.openCodeModel} нет учётных данных провайдера «${model.providerID}». Найдены только: ${auth.providers.join(', ')}.`);
+  }
   options.signal.throwIfAborted();
   const server = await startOpenCodeServer({ projectDir: options.projectDir, signal: options.signal, settings: options.settings });
   let activeSessionId = options.sessionId;
@@ -478,7 +496,7 @@ export interface OpenCodeProbe {
   authProviders: string[];
   configProviders: number;
   healthy: boolean;
-  warning?: string;
+  authenticated: boolean;
 }
 
 /**
@@ -494,6 +512,8 @@ export async function probeOpenCodeServer(settings: AppSettings, options: { proj
   const auth = detectOpenCodeAuth();
   const server = await startOpenCodeServer({ projectDir, settings, signal });
   try {
+    const unauthorized = await fetch(`${server.url}/config`, { signal: AbortSignal.timeout(10_000) });
+    if (unauthorized.status !== 401) throw new Error(`OpenCode: неавторизованный клиент получил HTTP ${unauthorized.status}, ожидался 401`);
     const response = await server.client.config.get({ signal: AbortSignal.timeout(10_000) });
     if (response.error || !response.data) throw new Error(`OpenCode health: ${redactSecrets(apiErrorText(response.error ?? 'пустой ответ'))}`);
     const providers = await server.client.config.providers({ query: { directory: projectDir }, signal: AbortSignal.timeout(10_000) });
@@ -504,7 +524,7 @@ export async function probeOpenCodeServer(settings: AppSettings, options: { proj
       authProviders: auth.providers,
       configProviders: providers.data.providers.length,
       healthy: true,
-      warning: server.warning
+      authenticated: true
     };
   } finally {
     await server.close();
