@@ -21,7 +21,7 @@ interface Active { id: string; controller: AbortController; promise?: Promise<vo
 
 export class Harness {
   private active?: Active;
-  private transcription?: { controller: AbortController; promise: Promise<string> };
+  private transcription?: { id: string; controller: AbortController; promise: Promise<string> };
   private listeners = new Set<(event: RunEvent) => void>();
   constructor(readonly store: Store) {}
   onEvent(listener: (event: RunEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -221,12 +221,18 @@ export class Harness {
     });
   }
   async saveSettings(settings: unknown): Promise<void> { if (this.active) throw new Error('Нельзя менять настройки во время операции'); await this.store.saveSettings(SettingsSchema.parse(settings)); }
-  async transcribe(audio: ArrayBuffer): Promise<string> {
+  async transcribe(audio: ArrayBuffer, requestId: string): Promise<string> {
     if (this.transcription) throw new Error('Уже выполняется расшифровка');
     const controller = new AbortController();
     const promise = transcribe(new Uint8Array(audio), this.store.settings, controller.signal);
-    this.transcription = { controller, promise };
+    this.transcription = { id: requestId, controller, promise };
     try { return await promise; } finally { if (this.transcription?.promise === promise) this.transcription = undefined; }
+  }
+  async cancelTranscription(requestId: string): Promise<void> {
+    const transcription = this.transcription;
+    if (!transcription || transcription.id !== requestId) return;
+    transcription.controller.abort(new Error('Расшифровка отменена'));
+    await transcription.promise.catch(() => undefined);
   }
   async shutdown(): Promise<void> {
     const operations: Promise<unknown>[] = [];

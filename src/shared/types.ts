@@ -56,7 +56,9 @@ export interface AppAPI {
   cleanup(id: string): Promise<void>;
   saveSettings(settings: AppSettings): Promise<void>;
   choose(kind: 'pdf' | 'data' | 'model' | 'binary' | 'key'): Promise<string | null>;
-  transcribe(audio: ArrayBuffer): Promise<string>;
+  requestMicrophoneAccess(): Promise<void>;
+  transcribe(audio: ArrayBuffer, requestId: string): Promise<string>;
+  cancelTranscription(requestId: string): Promise<void>;
   events(id: string): Promise<RunEvent[]>;
   openFolder(id: string): Promise<void>;
   onEvent(listener: (event: RunEvent) => void): () => void;

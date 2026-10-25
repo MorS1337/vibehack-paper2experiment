@@ -1,36 +1,37 @@
+// Keep this file dependency-free: it runs in the AudioWorklet global scope.
 class Paper2Capture extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = new Float32Array(4096);
-    this.offset = 0;
-    this.accepting = true;
+    this.buffer = new Float32Array(2048);
+    this.used = 0;
+    this.stopped = false;
     this.port.onmessage = ({ data }) => {
-      if (data !== 'flush') return;
-      this.accepting = false;
-      if (this.offset) {
-        const samples = this.buffer.slice(0, this.offset);
-        this.port.postMessage({ samples }, [samples.buffer]);
-        this.offset = 0;
-      }
+      if (data !== 'flush' || this.stopped) return;
+      this.stopped = true;
+      this.send();
       this.port.postMessage({ flushed: true });
     };
   }
+
+  send() {
+    if (!this.used) return;
+    const samples = this.buffer.slice(0, this.used);
+    this.port.postMessage({ samples }, [samples.buffer]);
+    this.used = 0;
+  }
+
   process(inputs) {
-    const channel = inputs[0]?.[0];
-    if (!this.accepting || !channel) return true;
-    let index = 0;
-    while (index < channel.length) {
-      const count = Math.min(channel.length - index, this.buffer.length - this.offset);
-      this.buffer.set(channel.subarray(index, index + count), this.offset);
-      this.offset += count;
-      index += count;
-      if (this.offset === this.buffer.length) {
-        this.port.postMessage({ samples: this.buffer }, [this.buffer.buffer]);
-        this.buffer = new Float32Array(4096);
-        this.offset = 0;
-      }
+    if (this.stopped) return false;
+    const channels = inputs[0];
+    if (!channels?.length) return true;
+    for (let i = 0; i < channels[0].length; i += 1) {
+      let sample = 0;
+      for (const channel of channels) sample += channel[i];
+      this.buffer[this.used++] = sample / channels.length;
+      if (this.used === this.buffer.length) this.send();
     }
     return true;
   }
 }
+
 registerProcessor('paper2-capture', Paper2Capture);

@@ -8,7 +8,7 @@ import type { AppSettings, ConnectionStatus } from '../shared/types.js';
 const SAMPLE_RATE = 16_000;
 const CHANNELS = 1;
 const BITS_PER_SAMPLE = 16;
-const MAX_SECONDS = 120;
+const MAX_SECONDS = 60;
 const MAX_AUDIO_BYTES = MAX_SECONDS * SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 
@@ -45,6 +45,7 @@ function inspectWav(audio: Uint8Array): WavInfo {
   if (audio.byteLength > 64 * 1024 * 1024) throw new Error('WAV: файл слишком большой для короткой диктовки');
   const view = new DataView(audio.buffer, audio.byteOffset, audio.byteLength);
   if (readAscii(view, 0, 4) !== 'RIFF' || readAscii(view, 8, 4) !== 'WAVE') throw new Error('WAV: ожидается RIFF/WAVE');
+  if (view.getUint32(4, true) + 8 !== audio.byteLength) throw new Error('WAV: размер RIFF не соответствует файлу');
   let format: number | undefined;
   let channels: number | undefined;
   let sampleRate: number | undefined;
@@ -58,6 +59,7 @@ function inspectWav(audio: Uint8Array): WavInfo {
     const payload = offset + 8;
     if (payload + size > audio.byteLength) throw new Error(`WAV: chunk ${id.trim() || '?'} обрезан`);
     if (id === 'fmt ') {
+      if (format !== undefined) throw new Error('WAV: повторный fmt chunk');
       if (size < 16) throw new Error('WAV: некорректный fmt chunk');
       format = view.getUint16(payload, true);
       channels = view.getUint16(payload + 2, true);
@@ -65,10 +67,12 @@ function inspectWav(audio: Uint8Array): WavInfo {
       blockAlign = view.getUint16(payload + 12, true);
       bitsPerSample = view.getUint16(payload + 14, true);
     } else if (id === 'data') {
+      if (dataBytes !== undefined) throw new Error('WAV: повторный data chunk');
       dataBytes = size;
     }
     offset = payload + size + (size % 2);
   }
+  if (offset !== audio.byteLength) throw new Error('WAV: обрезанный chunk или padding');
   if (format === undefined || channels === undefined || sampleRate === undefined || bitsPerSample === undefined || dataBytes === undefined) {
     throw new Error('WAV: отсутствует fmt или data chunk');
   }
@@ -183,6 +187,7 @@ interface WhisperRun {
 }
 
 export async function transcribe(audio: Uint8Array, settings: AppSettings, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (!(audio instanceof Uint8Array) || audio.byteLength === 0) throw new Error('Аудио не получено.');
   const wav = inspectWav(audio);
   const status = await whisperStatus(settings);
