@@ -284,3 +284,17 @@ PDF не включён в репозиторий: fetch-скрипт скачи
 [Vast](https://docs.vast.ai/sdk/python/quickstart),
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
 [Electron security](https://www.electronjs.org/docs/latest/tutorial/security).
+
+## Параллельные задачи для команды
+
+Проверенный stub MVP опубликован в `main`. Можно брать независимые задачи:
+
+- [#5 Pi: настоящий путь от документа до кода и результата](https://github.com/MorS1337/vibehack-paper2experiment/issues/5)
+- [#4 Vast: live lifecycle, бюджет, SSH, отмена и cleanup](https://github.com/MorS1337/vibehack-paper2experiment/issues/4)
+- [#2 Jev: реальный выбор из допустимых compute-вариантов](https://github.com/MorS1337/vibehack-paper2experiment/issues/2)
+- [#3 Whisper: русский голосовой ввод и физический микрофон](https://github.com/MorS1337/vibehack-paper2experiment/issues/3)
+- [#1 CI: macOS/Linux и воспроизводимость локального исполнения](https://github.com/MorS1337/vibehack-paper2experiment/issues/1)
+
+В каждой issue указаны текущие факты, файлы, границы, checklist и критерии приёмки.
+Деморежим без ключей должен оставаться рабочим. Платная аренда — только с отдельным разрешением и бюджетом.
+
