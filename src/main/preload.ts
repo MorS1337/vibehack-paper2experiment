@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { AppAPI, ConversationUpdate, RunEvent } from '../shared/types.js';
 
 const api: AppAPI = {
+  collab: {
+    status: () => ipcRenderer.invoke('p2e:collab:status'),
+    start: tunnel => ipcRenderer.invoke('p2e:collab:start', tunnel),
+    stop: () => ipcRenderer.invoke('p2e:collab:stop')
+  },
   snapshot: () => ipcRenderer.invoke('p2e:snapshot'),
   create: input => ipcRenderer.invoke('p2e:create', input),
   importPaper: source => ipcRenderer.invoke('p2e:importPaper', source),

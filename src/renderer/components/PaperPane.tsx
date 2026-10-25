@@ -6,7 +6,7 @@ import type {
 } from "pdfjs-dist";
 import { getDocument, GlobalWorkerOptions, TextLayer } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import type { ExperimentRun } from "../../shared/types.js";
+import type { AppAPI, ExperimentRun } from "../../shared/types.js";
 
 // App lazy-loads this reader as a separate chunk; its PDF.js dependencies stay static.
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -16,6 +16,7 @@ function normalizeQuote(text: string): string {
 }
 
 export default function PaperPane({
+  api,
   run,
   page,
   quote,
@@ -23,6 +24,7 @@ export default function PaperPane({
   onQuote,
   onClose,
 }: {
+  api: AppAPI;
   run: ExperimentRun;
   page: number;
   quote: string;
@@ -51,14 +53,17 @@ export default function PaperPane({
   }, [page]);
   useEffect(() => {
     let closed = false;
+    const controller = new AbortController();
     let loading: PDFDocumentLoadingTask | undefined;
     setPdf(null);
     setError("");
     void (async () => {
       try {
         if (closed) return;
+        const source = api.paperPdf ? { data: await api.paperPdf(run.id, controller.signal) } : { url: `paper2://app/paper/${run.id}.pdf` };
+        if (closed) return;
         loading = getDocument({
-          url: `paper2://app/paper/${run.id}.pdf`,
+          ...source,
           isEvalSupported: false,
           useSystemFonts: true,
           enableXfa: false,
@@ -73,9 +78,10 @@ export default function PaperPane({
     })();
     return () => {
       closed = true;
+      controller.abort();
       void loading?.destroy();
     };
-  }, [run.id, run.source?.sha256]);
+  }, [api, run.id, run.source?.sha256]);
 
   useEffect(() => {
     const element = viewport.current;
