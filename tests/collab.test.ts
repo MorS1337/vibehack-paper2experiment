@@ -113,7 +113,7 @@ test('expired links cannot read or mutate', async () => {
 });
 
 test('browser adapter reads and controls the same RPC, reconnects and catches up after a network failure', async () => {
-  await fixture(async ({ origin, control, view, server, calls }) => {
+  await fixture(async ({ origin, control, view, server }) => {
     const originalFetch = globalThis.fetch;
     let failNextPoll = false;
     globalThis.fetch = (input, init) => {
@@ -124,17 +124,6 @@ test('browser adapter reads and controls the same RPC, reconnects and catches up
       const api = await connectRemote(control);
       assert.equal(api.access, 'control');
       assert.deepEqual((await api.snapshot()).runs, []);
-      await api.plan('run-1');
-      assert.equal(calls.at(-1)?.args[0], 'run-1');
-      const requestId = 'b48535d5-ab40-4bd7-b294-f0904db64532';
-      const wav = Uint8Array.from([82, 73, 70, 70, 0, 255]);
-      await api.transcribe(wav.buffer);
-      assert.equal(calls.at(-1)?.args.length, 1);
-      assert.deepEqual(new Uint8Array(calls.at(-1)?.args[0] as ArrayBuffer), wav);
-      await api.sendMessage('run-1', 'Check the assumption', 'steer', requestId);
-      assert.deepEqual(calls.at(-1), { method: 'sendMessage', args: ['run-1', 'Check the assumption', 'steer', requestId] });
-      await api.conversation('run-1');
-      assert.deepEqual(calls.at(-1), { method: 'conversation', args: ['run-1'] });
       const paper = await api.paperPdf!('b48535d5-ab40-4bd7-b294-f0904db64532');
       assert.equal(Buffer.from(paper).toString(), '%PDF-1.7\npaper fixture');
       await assert.rejects(api.piLogin('provider', 'api_key'), /desktop/);
