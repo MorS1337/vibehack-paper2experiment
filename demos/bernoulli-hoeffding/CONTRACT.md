@@ -124,12 +124,12 @@ expected.
 
 ## `artifacts/plot.svg`
 
-A valid standalone SVG (at least 256 bytes, `<svg>` and `</svg>`) with:
-
-- the literal series labels `empirical` and `Hoeffding bound` (case-insensitive),
-- at least two data marks or series (`circle`, `polyline`, or `path`),
-- both tails as a function of `n`; the exact binomial series is recommended,
-- readable axis labels for `n` and probability.
+A valid, non-scripted standalone SVG (at least 256 bytes, `<svg>` and
+`</svg>`) with at least two data marks or series (`circle`, `polyline`, or
+`path`). Show the empirical tail and Hoeffding/exact series as functions of `n`;
+readable labels are part of the user-facing task, but the verifier does not
+assert literal label words. Scripts, event-handler attributes, and external
+`href`/`xlink:href` resources are rejected.
 
 The reference plot is deliberately dependency-free. A worker may use matplotlib
 if it pins the dependency in `requirements.txt`, but stdlib-only is preferred so

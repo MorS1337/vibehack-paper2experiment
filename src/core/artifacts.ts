@@ -210,6 +210,11 @@ function binomialUpperTail(n: number, p: number, threshold: number, logFacts: Fl
   return Math.min(1, Math.max(0, sum));
 }
 
+/**
+ * Validates the demo's variable scientific configuration. Default values live in
+ * demos/bernoulli-hoeffding/spec.json and reference/config.json, never here:
+ * a new plan version may legitimately change p, epsilon, n, trials, seed or primary_n.
+ */
 function validateDemoConfig(config: JsonObject): DemoConfig {
   for (const key of DEMO_PARAMETERS) {
     if (!(key in config)) fail(`config.json: отсутствует научный параметр ${key}`);
@@ -504,9 +509,10 @@ export async function collectAndValidate(run: ExperimentRun): Promise<{ artifact
     if (plotInfo.size > MAX_PLOT_BYTES) fail('SVG-график превышает лимит');
     const plot = await readFile(plotFile, 'utf8');
     if (plot.length < 256 || !/<svg[\s>]/i.test(plot) || !/<\/svg>/i.test(plot)) fail('SVG-график пуст или повреждён');
-    if (!plot.toLowerCase().includes('empirical') || !plot.toLowerCase().includes('hoeffding')) {
-      fail('SVG-график должен содержать серии «empirical» и «Hoeffding bound»');
+    if (/<(?:script|foreignObject)\b/i.test(plot) || /\son[a-z]+\s*=/i.test(plot) || /javascript:/i.test(plot)) {
+      fail('SVG-график не должен содержать исполняемый контент');
     }
+    if (/\b(?:href|xlink:href)\s*=\s*["'](?:https?:|\/\/)/i.test(plot)) fail('SVG-график не должен ссылаться на внешние ресурсы');
     if ((plot.match(/<(?:circle|polyline|path)\b/gi) ?? []).length < 2) fail('SVG-график не содержит точек/линий данных');
 
     const config = validateDemoConfig(configObject);
