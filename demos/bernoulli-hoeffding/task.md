@@ -1,3 +1,6 @@
+Task text for **real Pi mode**. The default stub mode uses the fixed demo plan and
+reference implementation instead of interpreting this prompt.
+
 Create a small, reproducible Python 3 experiment that checks Hoeffding's one-sided inequality for independent Bernoulli random variables.
 
 Use p = 0.5, epsilon = 0.08, n in {10, 20, 40, 80, 160}, 10,000 independent trials for each n, and seed 20261025. For each trial draw exactly n Bernoulli(p) values with a seeded deterministic pseudorandom generator and record the number of successes. The tail event is one-sided: successes/n - p >= epsilon, using the integer threshold ceil(n*(p + epsilon) - 1e-12).

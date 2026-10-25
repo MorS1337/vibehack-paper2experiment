@@ -83,11 +83,12 @@ tightness claim.
 
 ## Independent implementation
 
-The reference simulator in `reference/` is a transparent baseline for smoke
-tests and manual reproduction, not evidence of model-generated code. In the
-normal product flow pi creates its own project under the run's `project/`
-directory, satisfying `CONTRACT.md`. The independent verifier recomputes the
-primary metric from `samples.csv`; it never trusts `metrics.json` for that value.
+The reference simulator in `reference/` is a transparent scientific baseline.
+The default, explicitly labelled stub mode copies it to exercise the real harness
+without credentials. In the separate real Pi mode the model creates its own
+project, satisfying `CONTRACT.md`; copying reference code is not evidence of model
+generation. In both modes the verifier recomputes the primary metric from
+`samples.csv`, never from `metrics.json`.
 
 No author code exists for this check. `implementation: "independent"` and
 `publishedValue: null` are deliberate. The demo does **not** claim to reproduce

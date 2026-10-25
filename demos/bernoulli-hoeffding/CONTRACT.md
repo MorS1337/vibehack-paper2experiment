@@ -1,9 +1,9 @@
 # Code output contract: `demo = "bernoulli-hoeffding"`
 
-Pi must create a runnable project directly in the run's `project/` directory.
-The reference project in `reference/` is a baseline for smoke tests only;
-copying it is not evidence of model-driven implementation. The verifier
-requires the files below and independently recomputes the primary result.
+In real Pi mode the agent creates a runnable project in the run's `project/`
+directory. In the explicitly labelled stub mode the harness copies `reference/`
+and writes the frozen plan parameters into config.json. Neither mode may substitute
+metrics: Python actually runs, and the verifier independently recomputes the primary result.
 
 ## Project layout
 
