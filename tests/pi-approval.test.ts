@@ -36,7 +36,7 @@ test("one persistent conversation rejects writes before approval and again after
             id: `write-${index}`,
             type: "function",
             function: {
-              name: "write",
+              name: "hashline",
               arguments: JSON.stringify({
                 path: filenames[Math.floor(index / 2)],
                 content: "approved scientific work\n",
