@@ -147,6 +147,8 @@ verified/rentable, архитектуре amd64, CUDA ≥ 12.4, доступно
 заданного `allocated_storage`. Оценка содержит резерв setup/экспорта и сети.
 Выбранное предложение перепроверяется перед созданием; увеличение утверждённого
 тарифа требует нового выбора. Платный запуск — только после отдельного approval.
+Точечный запрос использует `ask_contract_id`: на проверенном Vast API фильтр `id`
+не находит тот же offer, хотя в ответе `id` совпадает с `ask_contract_id`.
 Фиксированный образ опубликован только для Linux/amd64:
 [метаданные Docker Hub](https://hub.docker.com/v2/repositories/pytorch/pytorch/tags/2.4.0-cuda12.4-cudnn9-runtime).
 Проверка CUDA использует поле API `cuda_max_good` — это
