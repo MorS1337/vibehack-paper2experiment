@@ -113,17 +113,18 @@ CI выполняет сборку/typecheck, весь suite и реальный
 | Путь | Наблюдение |
 | --- | --- |
 | Electron paper-first UI | Production-приложение реально запущено: arXiv → 17 страниц → бриф → фиксированный план v1 → review/approval → LocalBackend → Evidence. Старый завершённый эксперимент и его результаты также открыты в новом UI; ошибок renderer не наблюдалось. |
-| Build/tests/audit | `npm run build` прошёл. `npm test`: 73 passed, 1 skipped (Linux-only watchdog). `npm run smoke` выполнил реальные Python-пробы default/edited plan, rerun, cancel, timeout и истории. `npm audit --omit=dev`: 0 уязвимостей. |
-| LocalBackend | Реальный Python, venv, завершение с кодом 0; конфиг, метрики, график, выборки и логи собраны. |
+| Mobile Collab | Настоящий Electron и браузер 390×844: arXiv → 17 страниц → бриф → review → Local Python → `0.0234=234/10000`, 5 артефактов. Через view-ссылку download настоящих metrics.json успешен, попытка Cancel получила HTTP 403. Sharing отозван, renderer errors=0. Физический телефон/новый live HTTPS tunnel не проверялись. |
+| Build/tests/audit | `npm run build` прошёл. `npm test`: **112 passed, 0 skipped**. `npm run smoke` выполнил реальные Python-пробы default/edited plan, rerun, cancel, timeout и истории. `npm audit --omit=dev`: 0 уязвимостей. |
+| LocalBackend | Реальный Python, venv, exit 0; конфиг, метрики, CSV и логи собраны. График — необязательный экспорт, а не подставленное измерение. |
 | Научный демо-кейс | 50 000 строк CSV; основная вероятность `0.0234` независимо пересчитана как `234/10000`. |
 | Отмена/таймаут | Реальные процессы остановлены; проверено отсутствие живого процесса после остановки. |
 | История | JSON-состояние и JSONL-события восстановлены новым экземпляром хранилища. |
 | arXiv/PDF | `1910.02884v1`: 17 текстовых страниц, сохранены PDF/извлечённый текст, проверен SHA-256. |
 | Whisper | Физический встроенный микрофон MacBook Pro → AudioWorklet → WAV → IPC → whisper.cpp `1.9.5-dev` (tag `v1.9.5`), multilingual `base` → редактируемая задача. Научные термины распознаны с ошибками; экспериментов создано 0. [Подробности проверки](docs/whisper-verification.md). |
 | Whisper в новом UI | Синтетическая русская запись → настоящий AudioWorklet/WAV/IPC/whisper.cpp, multilingual `tiny` → редактируемый контекст брифа. Track остановлен; автоматического запуска не было. Ошибки распознавания научных терминов остаются; физический микрофон этим smoke не проверялся. |
-| SnapCompact | Подключён настоящий пакет 0.1.1 к Pi SDK 1.4.0. Авторские integration tests покрывают PNG, HMAC, restart, порядок кадров и Anthropic transport на локальный HTTP-сервер; при stop-code интеграции они не запускались. Live vision inference не проверен. |
+| SnapCompact | Настоящий `@nomeelnoj/pi-snap-compact@0.1.1` подключён к Pi SDK 1.4.0 и доступен в desktop. Полный suite, включая PNG/HMAC/restart/порядок кадров и Anthropic transport на локальный HTTP-сервер, прошёл. Платный live vision inference не проверен. |
 | Pi inference/генерация кода | По отчёту автора UI-ветки: OpenCode Go / `claude-haiku-5-5`, реальный план, проверка/сохранение v2, код инструментами Pi, Local Python exit 0 и отчёт. Независимый пересчёт `223/10000 = 0.0223`, 6 артефактов. Это не отдельный coding worker; при интеграции этот платный inference не повторялся. |
-| Vast — заглушка | Платный запуск отключён на уровне выбора compute, backend и billable API. До stop-code был создан единственный инстанс `57673848`; provider вернул `unknown`, запуск не начался, инстанс уничтожен и отсутствие подтверждено. SSH/научный результат на Vast не заявляются проверенными. |
+| Vast — заглушка | Платный запуск отключён на уровне выбора compute, backend и billable API. До stop-code был создан единственный инстанс `57673848`; backend зафиксировал `unknown`, запуск не начался, инстанс уничтожен и отсутствие подтверждено. SSH/научный результат на Vast не заявляются проверенными. |
 
 Деморежим использует явно обозначенные заглушки плана/кода, но не подставляет
 метрики. Проверенный путь Pi выше использует настоящие вызовы модели;
@@ -450,12 +451,12 @@ PDF не включён в репозиторий: fetch-скрипт скачи
 Проверенный stub MVP опубликован в `main`. Можно брать независимые задачи:
 
 - [#5 Pi: настоящий путь от документа до кода и результата](https://github.com/MorS1337/vibehack-paper2experiment/issues/5)
-- [#4 Vast: live lifecycle, бюджет, SSH, отмена и cleanup](https://github.com/MorS1337/vibehack-paper2experiment/issues/4)
+- [#4 Vast — отложено, в релизе явная заглушка](https://github.com/MorS1337/vibehack-paper2experiment/issues/4)
 - [#2 Jev: реальный выбор из допустимых compute-вариантов](https://github.com/MorS1337/vibehack-paper2experiment/issues/2)
-- [#11 SnapCompact: настоящий bitmap-frame compactor](https://github.com/MorS1337/vibehack-paper2experiment/issues/11)
+- [#11 SnapCompact — реализация интегрирована](https://github.com/MorS1337/vibehack-paper2experiment/issues/11)
 - [#3 Whisper — выполнено и закрыто](https://github.com/MorS1337/vibehack-paper2experiment/issues/3)
 - [#1 CI — выполнено и закрыто](https://github.com/MorS1337/vibehack-paper2experiment/issues/1)
 
 В каждой issue указаны текущие факты, файлы, границы, checklist и критерии приёмки.
-Деморежим без ключей должен оставаться рабочим. Платная аренда — только с отдельным разрешением и бюджетом.
+Деморежим без ключей должен оставаться рабочим. В этом релизе новые аренды Vast отключены при любых ключах и бюджетах.
 
