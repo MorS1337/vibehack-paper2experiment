@@ -105,7 +105,7 @@ export function normalizeVastOffer(raw: unknown): VastOffer | null {
 
 /**
  * Vast units are documented as: cpu_ram/gpu_ram in MB, disk_space and allocated disk
- * in GB, storage_cost in $/GB/month, network costs in $/GB, dph_total in $/hour.
+ * in GB, storage_cost in $/GB/month, dph_total in $/hour including allocated_storage.
  * RAM/VRAM are compared as MiB/1024 (GiB) so capacity is never overstated.
  */
 export function evaluateVastOffer(raw: unknown, spec: ExperimentSpec, options: VastFilterOptions = {}): VastEvaluation | null {
@@ -128,9 +128,11 @@ export function evaluateVastOffer(raw: unknown, spec: ExperimentSpec, options: V
   const maxHourly = spec.limits.maxHourlyUSD;
   const maxTotal = spec.limits.maxTotalUSD;
   if (!(maxHourly > 0) || !(maxTotal > 0)) return null;
+  // Informational breakdown only: the search response already includes this disk
+  // allocation in dph_total. Adding storage again would reject affordable offers.
   const storageHourlyUSD = offer.storageCostPerGBMonth * allocatedDiskGB / (30 * 24);
   const networkReserveUSD = transferGB * (offer.inetUpCostPerGB + offer.inetDownCostPerGB);
-  const hourlyUSD = offer.dphTotal + storageHourlyUSD;
+  const hourlyUSD = offer.dphTotal;
   if (!Number.isFinite(hourlyUSD) || hourlyUSD > maxHourly + 1e-9) return null;
   const durationSeconds = spec.limits.timeSeconds + bootSeconds;
   const estimatedUSD = hourlyUSD * durationSeconds / 3600 + networkReserveUSD;

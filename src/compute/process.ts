@@ -1,8 +1,9 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 export interface CommandResult {
   exitCode: number;
@@ -83,6 +84,22 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** A departed leader does not imply that its detached process group is empty. */
+export function isProcessGroupAlive(pgid: number): boolean {
+  if (process.platform === 'win32') return isProcessAlive(pgid);
+  if (!Number.isSafeInteger(pgid) || pgid <= 1) return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error) {
+      if (error.code === 'ESRCH') return false;
+      if (error.code === 'EPERM') return true;
+    }
+    throw error;
+  }
+}
+
 export async function readFileTail(file: string, maxBytes = 20_000): Promise<string> {
   const handle = await open(file, 'r').catch(error => {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
@@ -100,16 +117,64 @@ export async function readFileTail(file: string, maxBytes = 20_000): Promise<str
   }
 }
 
-/** TERM the whole process group, then KILL it after the grace period. */
-export async function terminateProcessGroup(pid: number, graceMs = 5000): Promise<void> {
-  if (!Number.isSafeInteger(pid) || pid <= 1) return;
-  signalProcessGroup(pid, 'SIGTERM');
-  const deadline = Date.now() + graceMs;
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) return;
-    await delay(100);
+const execFileAsync = promisify(execFile);
+const terminatingGroups = new Map<number, Promise<void>>();
+
+async function hasLiveGroupMembers(pgid: number): Promise<boolean> {
+  if (!isProcessGroupAlive(pgid)) return false;
+  // Orphaned zombies can remain visible to kill(0) until the OS reaps them.
+  // They cannot execute or write artifacts and must not hold cancellation open.
+  const { stdout } = await execFileAsync('ps', ['-A', '-o', 'pgid=,stat='], {
+    env: executionEnv(), timeout: 5000, maxBuffer: 8 * 1024 * 1024
+  });
+  return stdout.split('\n').some(line => {
+    const [group, state] = line.trim().split(/\s+/);
+    return Number(group) === pgid && state !== undefined && !state.startsWith('Z');
+  });
+}
+
+async function stopProcessGroup(pgid: number, graceMs: number): Promise<void> {
+  if (!isProcessGroupAlive(pgid)) return;
+  if (process.platform === 'win32') {
+    await execFileAsync('taskkill', ['/pid', String(pgid), '/T', '/F'], { windowsHide: true }).catch(error => {
+      if (isProcessAlive(pgid)) throw error;
+    });
+    while (isProcessAlive(pgid)) await delay(50);
+    return;
   }
-  signalProcessGroup(pid, 'SIGKILL');
+  const signal = (value: NodeJS.Signals): boolean => {
+    try {
+      process.kill(-pgid, value);
+      return true;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH') return false;
+      throw error;
+    }
+  };
+  if (!signal('SIGTERM')) return;
+  const deadline = Date.now() + Math.max(0, graceMs);
+  while (Date.now() < deadline) {
+    if (!isProcessGroupAlive(pgid)) return;
+    await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+  if (!isProcessGroupAlive(pgid) || !signal('SIGKILL')) return;
+  while (await hasLiveGroupMembers(pgid)) await delay(50);
+}
+
+/**
+ * Track only this in-flight group: never fall back to a possibly reused leader
+ * PID or leave a delayed KILL scheduled after the original group disappears.
+ * Concurrent cancel/timeout callers share the same TERM/KILL/exit barrier.
+ */
+export function terminateProcessGroup(pgid: number, graceMs = 5000): Promise<void> {
+  if (!Number.isSafeInteger(pgid) || pgid <= 1) return Promise.resolve();
+  const existing = terminatingGroups.get(pgid);
+  if (existing) return existing;
+  const termination = stopProcessGroup(pgid, graceMs).finally(() => {
+    if (terminatingGroups.get(pgid) === termination) terminatingGroups.delete(pgid);
+  });
+  terminatingGroups.set(pgid, termination);
+  return termination;
 }
 
 function appendLimited(current: string, chunk: Buffer, limit: number): string {
@@ -120,12 +185,14 @@ function appendLimited(current: string, chunk: Buffer, limit: number): string {
 
 /** Runs one bounded child with a private environment and kills its group on abort/timeout. */
 export function runProcess(command: string, args: string[], options: CommandOptions): Promise<CommandResult> {
+  if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? new Error('Отменено'));
   const { promise, resolve, reject } = Promise.withResolvers<CommandResult>();
   const limit = options.captureLimit ?? 2 * 1024 * 1024;
   let stdout = '';
   let stderr = '';
   let settled = false;
   let termination: Error | undefined;
+  let terminationTask: Promise<void> | undefined;
   const child = spawn(command, args, {
     cwd: options.cwd,
     env: options.env ?? executionEnv(),
@@ -133,18 +200,26 @@ export function runProcess(command: string, args: string[], options: CommandOpti
     detached: process.platform !== 'win32',
     windowsHide: true
   });
-  const finish = (result: CommandResult | Error) => {
+  const finish = async (result: CommandResult | Error) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', abort);
-    if (result instanceof Error) reject(result);
-    else resolve(result);
+    try {
+      await terminationTask;
+      if (result instanceof Error) reject(result);
+      else resolve(result);
+    } catch (error) {
+      reject(error);
+    }
   };
   const terminate = (reason: Error) => {
-    if (termination) return;
+    if (termination || settled) return;
     termination = reason;
-    if (child.pid) void terminateProcessGroup(child.pid, 5000);
+    if (child.pid) {
+      terminationTask = terminateProcessGroup(child.pid, 5000);
+      void terminationTask.catch(() => undefined);
+    }
   };
   const abort = () => terminate(options.signal?.reason instanceof Error ? options.signal.reason : new Error('Отменено'));
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -152,11 +227,11 @@ export function runProcess(command: string, args: string[], options: CommandOpti
   if (options.signal?.aborted) abort();
   child.stdout?.on('data', (chunk: Buffer) => { stdout = appendLimited(stdout, chunk, limit); });
   child.stderr?.on('data', (chunk: Buffer) => { stderr = appendLimited(stderr, chunk, limit); });
-  child.once('error', error => finish(error));
+  child.once('error', error => { void finish(error); });
   child.once('close', (code, signal) => {
-    if (termination) finish(termination);
-    else if (signal) finish(new Error(`Команда завершена сигналом ${signal}: ${path.basename(command)}\n${stderr.slice(-4000)}`));
-    else finish({ exitCode: code ?? 1, stdout, stderr });
+    if (termination) void finish(termination);
+    else if (signal) void finish(new Error(`Команда завершена сигналом ${signal}: ${path.basename(command)}\n${stderr.slice(-4000)}`));
+    else void finish({ exitCode: code ?? 1, stdout, stderr });
   });
   return promise;
 }
@@ -176,6 +251,7 @@ export interface FileCommandResult {
 
 /** Streams a child's stdout into a file while hashing it (used for verified cloud exports). */
 export function runProcessToFile(command: string, args: string[], outFile: string, options: CommandOptions & { maxBytes?: number }): Promise<FileCommandResult> {
+  if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? new Error('Отменено'));
   const { promise, resolve, reject } = Promise.withResolvers<FileCommandResult>();
   const maxBytes = options.maxBytes ?? 1024 ** 3;
   const hash = createHash('sha256');
@@ -188,6 +264,7 @@ export function runProcessToFile(command: string, args: string[], outFile: strin
   let outClosed = false;
   let settled = false;
   let termination: Error | undefined;
+  let terminationTask: Promise<void> | undefined;
   const child = spawn(command, args, {
     cwd: options.cwd,
     env: options.env ?? executionEnv(),
@@ -195,19 +272,27 @@ export function runProcessToFile(command: string, args: string[], outFile: strin
     detached: process.platform !== 'win32',
     windowsHide: true
   });
-  const finish = () => {
+  const finish = async () => {
     if (settled || !childClosed || !outClosed) return;
     settled = true;
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', abort);
-    if (termination) reject(termination);
-    else if (exitCode !== 0) reject(new Error(`Команда завершилась с кодом ${exitCode}: ${path.basename(command)}\n${stderr.slice(-4000)}`));
-    else resolve({ exitCode: exitCode ?? 1, stderr, bytes, sha256: hash.digest('hex') });
+    try {
+      await terminationTask;
+      if (termination) reject(termination);
+      else if (exitCode !== 0) reject(new Error(`Команда завершилась с кодом ${exitCode}: ${path.basename(command)}\n${stderr.slice(-4000)}`));
+      else resolve({ exitCode: exitCode ?? 1, stderr, bytes, sha256: hash.digest('hex') });
+    } catch (error) {
+      reject(error);
+    }
   };
   const terminate = (reason: Error) => {
     if (termination || settled) return;
     termination = reason;
-    if (child.pid) void terminateProcessGroup(child.pid, 5000);
+    if (child.pid) {
+      terminationTask = terminateProcessGroup(child.pid, 5000);
+      void terminationTask.catch(() => undefined);
+    }
   };
   const abort = () => terminate(options.signal?.reason instanceof Error ? options.signal.reason : new Error('Отменено'));
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -234,12 +319,8 @@ export function runProcessToFile(command: string, args: string[], outFile: strin
   });
   child.stderr?.on('data', (chunk: Buffer) => { stderr = appendLimited(stderr, chunk, 64 * 1024); });
   child.once('error', error => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    options.signal?.removeEventListener('abort', abort);
+    terminate(error);
     out.destroy();
-    reject(error);
   });
   child.once('close', code => {
     childClosed = true;
@@ -248,46 +329,53 @@ export function runProcessToFile(command: string, args: string[], outFile: strin
       outEnded = true;
       out.end();
     }
-    finish();
+    void finish();
   });
-  out.once('close', () => { outClosed = true; finish(); });
+  out.once('close', () => { outClosed = true; void finish(); });
   out.once('error', error => {
     terminate(error);
-    if (!settled) {
-      settled = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener('abort', abort);
-      reject(error);
-    }
+    out.destroy();
   });
   return promise;
 }
 
 /** Starts the scientific process in its own group with stdout/stderr persisted to files. */
-export async function startDetached(command: string, args: string[], cwd: string, stdoutFile: string, stderrFile: string): Promise<DetachedExecution> {
-  const out = await open(stdoutFile, 'w', 0o600);
+export async function startDetached(command: string, args: string[], cwd: string, stdoutFile: string, stderrFile: string, signal: AbortSignal): Promise<DetachedExecution> {
+  let execution: DetachedExecution | undefined;
   try {
-    const err = await open(stderrFile, 'w', 0o600);
+    const out = await open(stdoutFile, 'w', 0o600);
     try {
-      const child = spawn(command, args, {
-        cwd,
-        env: executionEnv(),
-        stdio: ['ignore', out.fd, err.fd],
-        detached: process.platform !== 'win32',
-        windowsHide: true
-      });
-      if (!child.pid) {
-        child.once('error', () => undefined);
-        throw new Error(`Не удалось запустить ${command}`);
+      const err = await open(stderrFile, 'w', 0o600);
+      try {
+        signal.throwIfAborted();
+        const child = spawn(command, args, {
+          cwd,
+          env: executionEnv(),
+          stdio: ['ignore', out.fd, err.fd],
+          detached: process.platform !== 'win32',
+          windowsHide: true
+        });
+        if (!child.pid) {
+          child.once('error', () => undefined);
+          throw new Error(`Не удалось запустить ${command}`);
+        }
+        const exit = Promise.withResolvers<number | null>();
+        child.once('error', exit.reject);
+        child.once('exit', code => exit.resolve(code));
+        execution = { child, pid: child.pid, exit: exit.promise };
+        return execution;
+      } finally {
+        await err.close();
       }
-      const exit = Promise.withResolvers<number | null>();
-      child.once('error', exit.reject);
-      child.once('exit', code => exit.resolve(code));
-      return { child, pid: child.pid, exit: exit.promise };
     } finally {
-      await err.close();
+      await out.close();
     }
-  } finally {
-    await out.close();
+  } catch (error) {
+    // Closing the inherited log descriptors can fail after spawn as well.
+    if (execution) {
+      await terminateProcessGroup(execution.pid);
+      await execution.exit.catch(() => null);
+    }
+    throw error;
   }
 }

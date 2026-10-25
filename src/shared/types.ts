@@ -22,12 +22,13 @@ export interface Artifact { path: string; kind: 'metrics' | 'plot' | 'config' | 
 export interface ExperimentRun {
   id: string; createdAt: string; updatedAt: string; title: string; status: RunStatus; input: ExperimentInput;
   dir: string; source?: SourceDocument; spec?: ExperimentSpec; planVersion: number; target?: ComputeTarget;
-  pid?: number; instanceId?: number; workerSessionId?: string; attempts: number;
+  pid?: number; instanceId?: number; attempts: number;
   artifacts: Artifact[]; metrics?: Record<string, number>; verification?: string; report?: string; error?: string;
   artifactsCollected?: boolean; cleanupRequired?: boolean; executionStarted?: boolean; deadlineAt?: string; command?: string;
+  provisioningLabel?: string; provisioningUncertain?: boolean;
 }
-export interface AppSettings { piProvider: string; piModel: string; openCodeModel: string; python: string; whisperBinary: string; whisperModel: string; sshKeyPath: string; }
-export interface ConnectionStatus { component: 'pi' | 'opencode' | 'jev' | 'vast' | 'whisper' | 'smartcompact'; state: 'ready' | 'needs_setup' | 'error'; detail: string; }
+export interface AppSettings { piProvider: string; piModel: string; python: string; whisperBinary: string; whisperModel: string; sshKeyPath: string; }
+export interface ConnectionStatus { component: 'pi' | 'jev' | 'vast' | 'whisper' | 'smartcompact'; state: 'ready' | 'needs_setup' | 'error'; detail: string; }
 export interface Snapshot { runs: ExperimentRun[]; activeId?: string; settings: AppSettings; connections: ConnectionStatus[]; }
 export interface ProjectManifest { entryPoint: string; config: string; requirements: string; artifacts: string[]; }
 export interface ComputeContext {

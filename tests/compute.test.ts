@@ -15,7 +15,7 @@ import type { AppSettings, ComputeContext, ExperimentRun, ExperimentSpec } from 
 const PYTHON = process.env.PYTHON ?? 'python3';
 
 const settings: AppSettings = {
-  piProvider: '', piModel: '', openCodeModel: '', python: PYTHON,
+  piProvider: '', piModel: '', python: PYTHON,
   whisperBinary: '', whisperModel: '', sshKeyPath: ''
 };
 
@@ -115,7 +115,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error('waitFor timed out');
 }
 
-test('Vast filter converts units, reserves storage/network and enforces approved budgets deterministically', () => {
+test('Vast filter converts units, counts all-in price once and enforces network and total budgets', () => {
   const spec = makeSpec({ timeSeconds: 3600, maxHourlyUSD: 1, maxTotalUSD: 5 });
   const evaluation = evaluateVastOffer(makeOffer(), spec, { bootSeconds: 0, transferGB: 0 });
   assert.ok(evaluation);
@@ -123,13 +123,14 @@ test('Vast filter converts units, reserves storage/network and enforces approved
   assert.equal(evaluation.target.ramGB, 32);
   assert.equal(evaluation.target.vramGB, 24);
   assert.equal(evaluation.target.diskGB, 16);
-  assert.equal(evaluation.hourlyUSD, 0.5 + 0.5 * 16 / 720);
+  assert.equal(evaluation.hourlyUSD, 0.5);
   assert.equal(evaluation.estimatedUSD, evaluation.hourlyUSD);
   assert.equal(evaluation.networkReserveUSD, 0);
   assert.equal(evaluation.target.details?.image, 'pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime');
 
-  const storageOnly = evaluateVastOffer(makeOffer({ dph_total: 0.95, storage_cost: 4.5 }), spec, { bootSeconds: 0, transferGB: 0 });
-  assert.equal(storageOnly, null, 'storage must count toward maxHourlyUSD');
+  const allIn = evaluateVastOffer(makeOffer({ dph_total: 0.95, storage_cost: 4.5 }), spec, { bootSeconds: 0, transferGB: 0 });
+  assert.equal(allIn?.hourlyUSD, 0.95, 'dph_total already includes the requested storage allocation');
+  assert.equal(evaluateVastOffer(makeOffer({ dph_total: 1.01 }), spec, { bootSeconds: 0, transferGB: 0 }), null);
 
   const tightTotal = makeSpec({ timeSeconds: 3600, maxHourlyUSD: 1, maxTotalUSD: 1 });
   const networkExcluded = evaluateVastOffer(makeOffer({ dph_total: 1, storage_cost: 0 }), tightTotal, { bootSeconds: 0, transferGB: 5 });
@@ -295,12 +296,12 @@ test('LocalBackend enforces its deadline and kills the whole process group', { t
   const backend = new LocalBackend();
   try {
     await backend.prepare(ctx);
-    await ctx.persist({ deadlineAt: new Date(Date.now() + 1500).toISOString() });
+    await ctx.persist({ deadlineAt: new Date(Date.now() + 3000).toISOString() });
     const started = Date.now();
     const result = await backend.run(ctx);
     const elapsed = Date.now() - started;
     assert.equal(result.exitCode, 124);
-    assert.ok(elapsed >= 1000 && elapsed < 15_000, `elapsed ${elapsed}`);
+    assert.ok(elapsed >= 2000 && elapsed < 15_000, `elapsed ${elapsed}`);
     const childPid = Number(await readFile(path.join(project, 'child.pid'), 'utf8'));
     await waitFor(() => !isProcessAlive(childPid), 5000);
     assert.equal(isProcessAlive(run.pid!), false);

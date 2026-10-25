@@ -8,7 +8,7 @@ import { LineDecoder } from './logs.js';
 import { assertConfigMatchesSpec, readProjectManifest, type ValidatedProject } from './manifest.js';
 import { delay } from './process.js';
 import { derivePublicKey, downloadRemoteFiles, expandHome, listUploadFiles, prepareKnownHosts, REMOTE_PROJECT, runSsh, shellQuote, uploadProject, type SshTarget } from './ssh.js';
-import { resolveVastCredential, VastApiClient, VastApiError, type VastInstance } from './vast-api.js';
+import { resolveVastCredential, VastApiClient, VastApiError, VastCreateRejectedError, type VastInstance } from './vast-api.js';
 import {
   evaluateVastOffer, VAST_BOOT_RESERVE_SECONDS, VAST_IMAGE, VAST_NETWORK_RESERVE_GB,
   type VastEvaluation
@@ -17,6 +17,7 @@ import {
 const BOOT_TIMEOUT_MS = 15 * 60 * 1000;
 const REMOTE_SETUP_LIMIT_MS = 20 * 60 * 1000;
 const REMOTE_LOG_CHUNK = 256 * 1024;
+const RECONCILE_TIMEOUT_MS = 30_000;
 
 const FATAL_INSTANCE_STATES: Record<string, true> = {
   exited: true,
@@ -50,6 +51,45 @@ function instanceState(instance: VastInstance): 'running' | 'stopped' | 'transit
   if (FATAL_INSTANCE_STATES[instance.actualStatus]) return instance.actualStatus === 'unknown' ? 'unknown' : 'stopped';
   if (TRANSITIONAL_INSTANCE_STATES[instance.actualStatus]) return 'transitional';
   return 'unknown';
+}
+
+/** The workload and deadline enforcer must not share a session/process group. */
+export function vastLaunchCommand(projectDir: string, entryPoint: string, config: string, deadline: number): string {
+  const watchdog = [
+    'set -u',
+    `cd ${shellQuote(projectDir)} || exit 1`,
+    'pgid="$1"',
+    `remaining=$(( ${Math.floor(deadline / 1000)} - $(date +%s) ))`,
+    'if [ "$remaining" -gt 0 ]; then sleep "$remaining"; fi',
+    'if kill -0 -- "-$pgid" 2>/dev/null; then',
+    '  echo timeout > .timed_out',
+    '  kill -TERM -- "-$pgid" 2>/dev/null || true',
+    '  sleep 5',
+    '  kill -KILL -- "-$pgid" 2>/dev/null || true',
+    'fi'
+  ].join('\n');
+  const script = [
+    'set -u',
+    `cd ${shellQuote(projectDir)} || exit 1`,
+    'rm -rf artifacts',
+    'mkdir -p artifacts',
+    'rm -f stdout.log stderr.log .exitcode .timed_out .watchdog.pid',
+    // Arm the independent watchdog before publishing a PID or starting Python.
+    `nohup setsid /bin/bash -c ${shellQuote(watchdog)} p2e-watchdog "$$" >/dev/null 2>&1 &`,
+    'echo $! > .watchdog.pid',
+    'echo $$ > .pid',
+    `( env -i HOME=/root TMPDIR=/tmp PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 .venv/bin/python ${shellQuote(entryPoint)} --config ${shellQuote(config)} > stdout.log 2> stderr.log; echo $? > .exitcode ) &`,
+    'child=$!',
+    'wait "$child" || true'
+  ].join('\n');
+  const pidFile = shellQuote(`${projectDir}/.pid`);
+  return [
+    'command -v nohup setsid /bin/bash >/dev/null || exit 1',
+    `rm -f ${pidFile} || exit 1`,
+    `nohup setsid /bin/bash -c ${shellQuote(script)} >/dev/null 2>&1 &`,
+    `i=0; while [ ! -s ${pidFile} ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done`,
+    `if [ -s ${pidFile} ]; then cat ${pidFile}; else echo PID_MISSING >&2; exit 1; fi`
+  ].join('\n');
 }
 
 class RemoteLogPump {
@@ -157,7 +197,8 @@ export class VastBackend implements ComputeBackend {
 
   private async revalidateOffer(client: VastApiClient, ctx: ComputeContext, target: ComputeTarget & { offerId: number }): Promise<VastEvaluation> {
     const offers = await client.searchOffers({
-      id: { eq: target.offerId }, type: 'ondemand', verified: { eq: true }, rentable: { eq: true }, rented: { eq: false }, limit: 5
+      id: { eq: target.offerId }, type: 'ondemand', verified: { eq: true }, rentable: { eq: true }, rented: { eq: false },
+      allocated_storage: Math.max(16, Math.ceil(ctx.spec.requirements.diskGB)), limit: 5
     }, { signal: ctx.signal, timeoutMs: 20_000 });
     const raw = offers.find(offer => offer && typeof offer === 'object' && 'id' in offer && offer.id === target.offerId);
     if (!raw) throw new Error(`Предложение Vast ${target.offerId} больше недоступно; требуется новое подтверждение выбора`);
@@ -224,6 +265,59 @@ export class VastBackend implements ComputeBackend {
     throw new Error(`SSH к Vast не поднялся за отведённое время: ${lastError}`);
   }
 
+  /**
+   * Recover a possibly accepted create without reissuing it. An empty listing is
+   * not proof of rejection: provider visibility may lag the create transaction.
+   * This deliberately ignores the experiment's aborted/expired execution signal.
+   */
+  async reconcile(ctx: ComputeContext): Promise<void> {
+    if (!ctx.run.provisioningUncertain) return;
+    await ctx.persist({ cleanupRequired: true });
+    const label = ctx.run.provisioningLabel;
+    if (!label) throw new Error('Vast: неизвестна метка незавершённого создания; проверьте аренды вручную в Vast Console');
+    const credential = await resolveVastCredential();
+    if (!credential) throw new SetupRequiredError(`Vast-ключ недоступен: требуется сверка инстанса с меткой ${label}`);
+    const client = new VastApiClient(credential.key);
+    const signal = AbortSignal.timeout(RECONCILE_TIMEOUT_MS);
+    let lastError: unknown;
+    while (!signal.aborted) {
+      try {
+        const instances = await client.listInstances({
+          signal, timeoutMs: 10_000, label,
+          onInstance: async instance => {
+            if (instance.label === label && ctx.run.instanceId === undefined) {
+              await ctx.persist({ instanceId: instance.id, cleanupRequired: true });
+            }
+          }
+        });
+        const matches = instances.filter(instance => instance.label === label);
+        if (matches.length > 0) {
+          const instance = matches[0];
+          if (ctx.run.instanceId !== undefined && ctx.run.instanceId !== instance.id) {
+            throw new Error(`Vast: инстанс с меткой ${label} изменился при сверке; требуется ручная проверка в Vast Console`);
+          }
+          await ctx.persist({
+            instanceId: instance.id,
+            provisioningUncertain: matches.length !== 1,
+            cleanupRequired: true,
+            ...(ctx.run.target ? { target: { ...ctx.run.target, details: { ...ctx.run.target.details, instanceId: instance.id } } } : {})
+          });
+          if (matches.length !== 1) throw new Error(`Vast: несколько инстансов с меткой ${label}; требуется ручная сверка в Vast Console`);
+          await ctx.emit('compute', `Vast-инстанс ${instance.id} восстановлен по точной метке ${label}`);
+          return;
+        }
+        lastError = new Error('инстанс пока не виден в списке аккаунта');
+      } catch (error) {
+        lastError = error;
+        // A found lease or duplicate stays durably uncertain if pagination or
+        // persistence fails; never hide it by selecting another lease on retry.
+        if (ctx.run.instanceId !== undefined) throw error;
+      }
+      await delay(2000, signal).catch(() => undefined);
+    }
+    throw new Error(`Vast: результат создания ${label} остаётся неизвестным (${String(lastError)}). Повторите сверку или проверьте Vast Console; повторное создание запрещено`);
+  }
+
   private async setupRemote(ctx: ComputeContext, target: SshTarget, project: ValidatedProject): Promise<void> {
     const remaining = this.deadline(ctx) - Date.now();
     if (remaining <= 1000) throw new Error('Лимит времени истёк перед установкой зависимостей на Vast');
@@ -235,7 +329,10 @@ export class VastBackend implements ComputeBackend {
       'set -euo pipefail',
       `cd ${REMOTE_PROJECT}`,
       'mkdir -p artifacts',
-      'if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi',
+      // The pinned PyTorch image installs Python and CUDA-enabled torch in Conda.
+      // Inherit those image packages; explicit requirements may override them.
+      'if [ ! -x .venv/bin/python ] || ! .venv/bin/python -c \'import sys; assert sys.base_prefix == "/opt/conda"\' 2>/dev/null; then rm -rf .venv; fi',
+      '/opt/conda/bin/python -m venv --system-site-packages .venv',
       `H=${shellQuote(requirementsHash)}`,
       'if [ "$(cat .venv/.p2e-requirements.sha256 2>/dev/null || true)" != "$H" ]; then',
       ...(hasRequirements ? [`  .venv/bin/python -m pip install --disable-pip-version-check --no-input -r ${shellQuote(project.manifest.requirements)}`] : []),
@@ -244,7 +341,7 @@ export class VastBackend implements ComputeBackend {
     ].join('\n');
     const command = [
       `timeout --signal=TERM --kill-after=10 ${seconds}`,
-      'env -i HOME=/root TMPDIR=/tmp PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8',
+      'env -i HOME=/root TMPDIR=/tmp PATH=/opt/conda/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8',
       'PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1',
       `/bin/bash -c ${shellQuote(script)}`
     ].join(' ');
@@ -262,35 +359,57 @@ export class VastBackend implements ComputeBackend {
     const session = await this.session(ctx);
     await this.ensureSshKey(session, ctx.signal);
 
+    if (ctx.run.provisioningUncertain) await this.reconcile(ctx);
     let id = ctx.run.instanceId;
     if (id === undefined) {
       const evaluation = await this.revalidateOffer(session.client, ctx, target);
       const deadlineAt = ctx.run.deadlineAt ?? new Date(Date.now() + ctx.spec.limits.timeSeconds * 1000).toISOString();
       const disk = Math.max(16, Math.ceil(ctx.spec.requirements.diskGB));
       await ctx.emit('compute', `Создаю Vast-инстанс из предложения ${target.offerId}: ${evaluation.target.hourlyUSD}$/ч, резерв итога ${evaluation.target.estimatedUSD}$`);
-      const created = await session.client.createInstance(target.offerId, {
-        image: VAST_IMAGE,
-        label: `p2e-${ctx.run.id.slice(0, 8)}`,
-        disk,
-        runtype: 'ssh_direct',
-        target_state: 'running',
-        cancel_unavail: true
-      }, { signal: ctx.signal, timeoutMs: 60_000 });
-      id = created;
+      const provisioningLabel = `p2e-${ctx.run.id}`;
+      // Commit intent BEFORE dispatch: a lost create reply is still a possible
+      // billable instance, including a crash between HTTP dispatch and persist.
       await ctx.persist({
-        instanceId: id,
+        provisioningLabel,
+        provisioningUncertain: true,
         deadlineAt,
         cleanupRequired: true,
         target: {
           ...evaluation.target,
           details: {
             ...evaluation.target.details,
-            instanceId: id,
-            instanceCreatedAt: new Date().toISOString(),
+            provisioningRequestedAt: new Date().toISOString(),
             approvedHourlyUSD: target.hourlyUSD,
             approvedEstimatedUSD: target.estimatedUSD
           }
         }
+      });
+      try {
+        id = await session.client.createInstance(target.offerId, {
+          image: VAST_IMAGE,
+          label: provisioningLabel,
+          disk,
+          runtype: 'ssh_direct',
+          target_state: 'running',
+          cancel_unavail: true
+        }, { signal: ctx.signal, timeoutMs: 60_000 });
+      } catch (error) {
+        if (error instanceof VastCreateRejectedError) {
+          await ctx.persist({ provisioningUncertain: false, cleanupRequired: false });
+          throw error;
+        }
+        try {
+          await this.reconcile(ctx);
+        } catch (reconcileError) {
+          throw new Error(`Vast: ответ создания потерян (${String(error)}); ${String(reconcileError)}`);
+        }
+        id = ctx.run.instanceId;
+      }
+      if (id === undefined) throw new Error('Vast: создание остаётся неопределённым; повторная аренда запрещена');
+      await ctx.persist({
+        instanceId: id,
+        provisioningUncertain: false,
+        target: { ...this.target(ctx), details: { ...this.target(ctx).details, instanceId: id, instanceCreatedAt: new Date().toISOString() } }
       });
       await ctx.emit('compute', `Vast-инстанс ${id} создан; PID будет сохранён после запуска. Тарификация началась`);
     } else {
@@ -304,6 +423,7 @@ export class VastBackend implements ComputeBackend {
       }
     }
     if (id === undefined) throw new Error('Vast: идентификатор инстанса не сохранился');
+    ctx.signal.throwIfAborted();
 
     const instance = await this.waitForRunning(session.client, ctx, id);
     const sshTarget = await this.sshFor(ctx, instance);
@@ -312,7 +432,7 @@ export class VastBackend implements ComputeBackend {
     await ctx.emit('compute', `SSH к Vast ${id} доступен (known_hosts: ${sshTarget.knownHostsFile})`);
     const files = await listUploadFiles(project.projectDir, project.manifest);
     await ctx.emit('compute', `Загружаю ${files.length} allowlisted файлов проекта и data/ (без .venv, .git и секретов)`);
-    const stale = await runSsh(sshTarget, `cd ${REMOTE_PROJECT} && find . -mindepth 1 -maxdepth 1 ! -name .venv ! -name artifacts -exec rm -rf {} +`, { timeoutMs: 60_000, signal: ctx.signal, captureLimit: 16 * 1024 });
+    const stale = await runSsh(sshTarget, `mkdir -p ${REMOTE_PROJECT} && cd ${REMOTE_PROJECT} && find . -mindepth 1 -maxdepth 1 ! -name .venv ! -name artifacts -exec rm -rf {} +`, { timeoutMs: 60_000, signal: ctx.signal, captureLimit: 16 * 1024 });
     if (stale.exitCode !== 0) throw new Error(`Не удалось очистить устаревшие файлы на Vast: ${stale.stderr.slice(-1000)}`);
     await uploadProject(sshTarget, project.projectDir, files, ctx.signal);
     await this.setupRemote(ctx, sshTarget, project);
@@ -342,29 +462,12 @@ export class VastBackend implements ComputeBackend {
     const remaining = deadline - Date.now();
     if (remaining <= 1000) throw new Error('Лимит времени истёк до запуска эксперимента на Vast');
     const watchdogSeconds = Math.max(1, Math.ceil(remaining / 1000));
-    const script = [
-      'set -u',
-      `cd ${REMOTE_PROJECT}`,
-      'rm -rf artifacts',
-      'mkdir -p artifacts',
-      'rm -f stdout.log stderr.log .exitcode .timed_out .watchdog.pid',
-      'echo $$ > .pid',
-      `( env -i HOME=/root TMPDIR=/tmp PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 .venv/bin/python ${shellQuote(project.manifest.entryPoint)} --config ${shellQuote(project.manifest.config)} > stdout.log 2> stderr.log; echo $? > .exitcode ) &`,
-      'child=$!',
-      `( sleep ${watchdogSeconds}; if kill -0 "$child" 2>/dev/null; then echo timeout > .timed_out; kill -TERM -$$ 2>/dev/null || kill -TERM "$child" 2>/dev/null; sleep 5; kill -KILL -$$ 2>/dev/null || kill -KILL "$child" 2>/dev/null; fi ) >/dev/null 2>&1 &`,
-      'echo $! > .watchdog.pid',
-      'wait "$child" || true'
-    ].join('\n');
-    const startCommand = [
-      `nohup setsid /bin/bash -c ${shellQuote(script)} >/dev/null 2>&1 &`,
-      `i=0; while [ ! -s .pid ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done`,
-      'if [ -s .pid ]; then cat .pid; else echo PID_MISSING >&2; exit 1; fi'
-    ].join('\n');
+    const startCommand = vastLaunchCommand(REMOTE_PROJECT, project.manifest.entryPoint, project.manifest.config, deadline);
     const deadlineAt = ctx.run.deadlineAt ?? new Date(deadline).toISOString();
     // Durable intent marker: from here on an SSH command may have reached the provider
     // even if this process dies before the PID reply is persisted. A new attempt also
     // invalidates any artifacts collected from an earlier attempt.
-    await ctx.persist({ executionStarted: true, artifactsCollected: false });
+    await ctx.persist({ executionStarted: true, artifactsCollected: false, artifacts: [], metrics: undefined, verification: undefined });
     let startError: Error | undefined;
     const started = await runSsh(sshTarget, startCommand, { timeoutMs: 30_000, signal: ctx.signal, captureLimit: 16 * 1024 }).catch(error => {
       startError = error instanceof Error ? error : new Error(String(error));
@@ -380,10 +483,11 @@ export class VastBackend implements ComputeBackend {
       pid = Number(pidText);
       if (Number.isSafeInteger(pid) && pid > 0) {
         await ctx.persist({ pid, deadlineAt, cleanupRequired: true, command: `.venv/bin/python ${project.manifest.entryPoint} --config ${project.manifest.config}` });
-        await ctx.emit('error', `SSH-канал запуска прервался, но удалённый PID ${pid} восстановлен; watchdog и cancel активны`);
+        await ctx.emit('compute', `SSH-канал запуска прервался, но удалённый PID ${pid} восстановлен; продолжаю наблюдение`);
+      } else {
+        if (startError) throw startError;
+        throw new Error(`Не удалось запустить процесс на Vast (код ${started?.exitCode ?? 'нет ответа'}): ${started?.stderr.slice(-3000) || pidText}`);
       }
-      if (startError) throw startError;
-      throw new Error(`Не удалось запустить процесс на Vast (код ${started?.exitCode ?? 'нет ответа'}): ${started?.stderr.slice(-3000) || pidText}`);
     }
     await ctx.persist({ pid, deadlineAt, cleanupRequired: true, command: `.venv/bin/python ${project.manifest.entryPoint} --config ${project.manifest.config}` });
     await ctx.emit('compute', `Vast-процесс запущен: PID ${pid}; watchdog ${watchdogSeconds}с; PID сохранён`);
@@ -436,7 +540,7 @@ export class VastBackend implements ComputeBackend {
 
   async getStatus(ctx: ComputeContext): Promise<'running' | 'stopped' | 'unknown'> {
     const id = ctx.run.instanceId;
-    if (id === undefined) return 'stopped';
+    if (id === undefined) return ctx.run.provisioningUncertain ? 'unknown' : 'stopped';
     const credential = await resolveVastCredential();
     if (!credential) return 'unknown';
     const client = new VastApiClient(credential.key);
@@ -616,6 +720,7 @@ export class VastBackend implements ComputeBackend {
   }
 
   async cleanup(ctx: ComputeContext): Promise<void> {
+    if (ctx.run.provisioningUncertain) await this.reconcile(ctx);
     const id = ctx.run.instanceId;
     if (id === undefined) {
       await ctx.persist({ cleanupRequired: false });

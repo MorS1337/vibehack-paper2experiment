@@ -34,6 +34,9 @@ export class VastApiError extends Error {
   }
 }
 
+/** A definitive provider rejection, unlike a lost or malformed create response. */
+export class VastCreateRejectedError extends VastApiError {}
+
 /** VAST_API_KEY wins; otherwise read the native CLI key file (never renderer/settings). */
 export async function resolveVastCredential(): Promise<VastCredential | null> {
   const fromEnvironment = process.env.VAST_API_KEY?.trim();
@@ -67,12 +70,12 @@ function errorDetail(body: unknown): string {
 export class VastApiClient {
   constructor(private readonly apiKey: string, private readonly baseURL = VAST_API_BASE) {}
 
-  private async request<T>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', endpoint: string, body?: unknown, options: VastApiOptions = {}): Promise<T> {
+  private async request<T>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', endpoint: string | URL, body?: unknown, options: VastApiOptions = {}): Promise<T> {
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 20_000);
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     let response: Response;
     try {
-      response = await fetch(`${this.baseURL}${endpoint}`, {
+      response = await fetch(endpoint instanceof URL ? endpoint : `${this.baseURL}${endpoint}`, {
         method,
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
@@ -113,6 +116,40 @@ export class VastApiClient {
     return this.parseInstance(object, rawId);
   }
 
+  /** Authenticated account instances, not marketplace offers. v1 uses keyset pagination. */
+  async listInstances(options: VastApiOptions & { label?: string; onInstance?: (instance: VastInstance) => Promise<void> } = {}): Promise<VastInstance[]> {
+    const instances: VastInstance[] = [];
+    const tokens = new Set<string>();
+    let token: string | undefined;
+    do {
+      const url = new URL('../v1/instances', `${this.baseURL}/`);
+      url.searchParams.set('limit', '25');
+      url.searchParams.set('order_by', JSON.stringify([{ col: 'id', dir: 'asc' }]));
+      if (options.label !== undefined) url.searchParams.set('select_filters', JSON.stringify({ label: { eq: options.label } }));
+      if (token) url.searchParams.set('after_token', token);
+      const result = await this.request<{ success?: boolean; instances?: unknown; next_token?: unknown }>('GET', url, undefined, options);
+      if (!result || result.success === false || !Array.isArray(result.instances)) {
+        throw new VastApiError(200, 'Vast API: ответ списка инстансов не содержит instances[]');
+      }
+      for (const raw of result.instances) {
+        if (!raw || typeof raw !== 'object' || !('id' in raw) || typeof raw.id !== 'number' || !Number.isSafeInteger(raw.id) || raw.id <= 0) {
+          throw new VastApiError(200, 'Vast API: некорректный инстанс в списке аккаунта');
+        }
+        const instance = this.parseInstance(raw as Record<string, unknown>, raw.id);
+        instances.push(instance);
+        // Recovery can durably record a found lease before a later page fails.
+        await options.onInstance?.(instance);
+      }
+      if (result.next_token !== null && result.next_token !== undefined && typeof result.next_token !== 'string') {
+        throw new VastApiError(200, 'Vast API: некорректный next_token списка инстансов');
+      }
+      token = typeof result.next_token === 'string' && result.next_token ? result.next_token : undefined;
+      if (token && tokens.has(token)) throw new VastApiError(200, 'Vast API: повтор курсора списка инстансов');
+      if (token) tokens.add(token);
+    } while (token);
+    return instances;
+  }
+
   private parseInstance(object: Record<string, unknown>, id: number): VastInstance {
     const number = (key: string): number | undefined => {
       const value = object[key];
@@ -134,8 +171,19 @@ export class VastApiClient {
   }
 
   async createInstance(offerId: number, body: Record<string, unknown>, options?: VastApiOptions): Promise<number> {
-    const result = await this.request<{ success?: boolean; new_contract?: unknown; msg?: string }>('PUT', `/asks/${offerId}/`, body, options);
-    if (!result || result.success === false) throw new VastApiError(200, `Vast: предложение не принято${result?.msg ? `: ${result.msg}` : ''}`);
+    let result: { success?: boolean; new_contract?: unknown; msg?: string };
+    try {
+      result = await this.request<typeof result>('PUT', `/asks/${offerId}/`, body, options);
+    } catch (error) {
+      if (error instanceof VastApiError && [400, 401, 403, 404].includes(error.status)) {
+        throw new VastCreateRejectedError(error.status, error.message);
+      }
+      throw error;
+    }
+    if (result?.success === false && result.new_contract === undefined) {
+      throw new VastCreateRejectedError(200, `Vast: предложение не принято${result.msg ? `: ${result.msg}` : ''}`);
+    }
+    if (!result || result.success === false) throw new VastApiError(200, 'Vast: противоречивый ответ создания инстанса');
     if (typeof result.new_contract !== 'number' || !Number.isSafeInteger(result.new_contract) || result.new_contract <= 0) {
       throw new VastApiError(200, 'Vast: create instance не вернул new_contract');
     }
@@ -157,7 +205,14 @@ export class VastApiClient {
   }
 
   async listSshKeys(options?: VastApiOptions): Promise<{ id: number; key: string }[]> {
-    const result = await this.request<unknown>('GET', '/ssh', undefined, options);
+    let result: unknown;
+    try {
+      result = await this.request<unknown>('GET', '/ssh', undefined, options);
+    } catch (error) {
+      // The documented empty-account response is specific to GET /ssh.
+      if (error instanceof VastApiError && error.status === 404) return [];
+      throw error;
+    }
     const wrapped = result && typeof result === 'object' && 'keys' in result ? result.keys : undefined;
     const array = Array.isArray(result) ? result : Array.isArray(wrapped) ? wrapped : [];
     return array.flatMap(item => {
@@ -172,6 +227,6 @@ export class VastApiClient {
   }
 
   async ping(options?: VastApiOptions): Promise<void> {
-    await this.request<unknown>('GET', '/ssh', undefined, options);
+    await this.listSshKeys(options);
   }
 }

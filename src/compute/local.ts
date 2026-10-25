@@ -6,7 +6,7 @@ import type { ComputeBackend, ComputeContext } from '../shared/types.js';
 import { FileLogPump } from './logs.js';
 import { assertConfigMatchesSpec, readProjectManifest, venvPython, type ValidatedProject } from './manifest.js';
 import {
-  executionEnv, isProcessAlive, readFileTail, runProcess, startDetached,
+  executionEnv, isProcessAlive, isProcessGroupAlive, readFileTail, runProcess, startDetached,
   terminateProcessGroup, type DetachedExecution
 } from './process.js';
 
@@ -14,7 +14,7 @@ const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 const VENV_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class LocalBackend implements ComputeBackend {
-  private active?: { execution: DetachedExecution };
+  private active?: { execution: DetachedExecution; terminate: () => Promise<void> };
   private pump?: FileLogPump;
 
   private async projectFor(ctx: ComputeContext): Promise<ValidatedProject> {
@@ -97,39 +97,63 @@ export class LocalBackend implements ComputeBackend {
 
     const pump = this.createPump(project.projectDir);
     await pump.stop();
+    if (deadline - Date.now() <= 1000) throw new Error('Лимит времени исполнения истёк во время подготовки логов');
     const artifactsDir = path.join(project.projectDir, 'artifacts');
     await rm(artifactsDir, { recursive: true, force: true });
     await mkdir(artifactsDir, { recursive: true });
     const stdoutFile = path.join(project.projectDir, 'stdout.log');
     const stderrFile = path.join(project.projectDir, 'stderr.log');
     const commandLine = `${venv} ${project.manifest.entryPoint} --config ${project.manifest.config}`;
-    await ctx.persist({ executionStarted: true, artifactsCollected: false });
-    const execution = await startDetached(venv, [project.manifest.entryPoint, '--config', project.manifest.config], project.projectDir, stdoutFile, stderrFile);
-    this.active = { execution };
-    const deadlineAt = ctx.run.deadlineAt ?? new Date(deadline).toISOString();
-    await ctx.persist({ pid: execution.pid, command: commandLine, deadlineAt });
-    await ctx.emit('compute', `Локальный процесс запущен: PID ${execution.pid}`);
-
-    pump.reset();
-    pump.attachSink(message => { void ctx.emit('log', message).catch(() => undefined); });
-    pump.start();
+    await ctx.persist({ executionStarted: true, artifactsCollected: false, artifacts: [], metrics: undefined, verification: undefined });
+    ctx.signal.throwIfAborted();
+    const execution = await startDetached(venv, [project.manifest.entryPoint, '--config', project.manifest.config], project.projectDir, stdoutFile, stderrFile, ctx.signal);
+    let terminationTask: Promise<void> | undefined;
+    const active = {
+      execution,
+      terminate: () => {
+        terminationTask ??= terminateProcessGroup(execution.pid, 5000);
+        // Event handlers cannot await, but run/cancel both await this same barrier.
+        void terminationTask.catch(() => undefined);
+        return terminationTask;
+      }
+    };
+    this.active = active;
     let timedOut = false;
-    const abort = () => { void terminateProcessGroup(execution.pid, 5000); };
+    const abort = () => { void active.terminate(); };
     ctx.signal.addEventListener('abort', abort, { once: true });
+    if (ctx.signal.aborted) abort();
     const timer = setTimeout(() => {
       timedOut = true;
-      void terminateProcessGroup(execution.pid, 5000);
+      void active.terminate();
     }, Math.max(1, deadline - Date.now()));
 
     let exitCode: number | null;
     try {
+      // Persist the PID before any event/log await so cancellation and recovery
+      // can find the process even if a later persistence or consumer call fails.
+      const deadlineAt = ctx.run.deadlineAt ?? new Date(deadline).toISOString();
+      await ctx.persist({ pid: execution.pid, command: commandLine, deadlineAt });
+      await ctx.emit('compute', `Локальный процесс запущен: PID ${execution.pid}`);
+      pump.reset();
+      pump.attachSink(message => { void ctx.emit('log', message).catch(() => undefined); });
+      pump.start();
       exitCode = await execution.exit;
+    } catch (error) {
+      await active.terminate();
+      await execution.exit.catch(() => null);
+      throw error;
     } finally {
-      clearTimeout(timer);
-      ctx.signal.removeEventListener('abort', abort);
       pump.detachSink();
-      await pump.stop();
-      this.active = undefined;
+      try {
+        await pump.stop();
+      } finally {
+        clearTimeout(timer);
+        ctx.signal.removeEventListener('abort', abort);
+        // The leader may have exited on TERM while a descendant ignored it.
+        // Do not settle run until the complete group termination has finished.
+        await terminationTask;
+        if (this.active === active) this.active = undefined;
+      }
     }
     if (ctx.signal.aborted) throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new Error('Отменено');
     const stderr = await readFileTail(stderrFile, 30_000);
@@ -143,7 +167,7 @@ export class LocalBackend implements ComputeBackend {
 
   async getStatus(ctx: ComputeContext): Promise<'running' | 'stopped' | 'unknown'> {
     const active = this.active;
-    if (active) return active.execution.child.exitCode === null && active.execution.child.signalCode === null ? 'running' : 'stopped';
+    if (active) return isProcessGroupAlive(active.execution.pid) ? 'running' : 'stopped';
     if (ctx.run.pid === undefined) return 'stopped';
     return isProcessAlive(ctx.run.pid) ? 'running' : 'stopped';
   }
@@ -156,12 +180,8 @@ export class LocalBackend implements ComputeBackend {
     const active = this.active;
     if (active) {
       const pid = active.execution.pid;
-      await terminateProcessGroup(pid, 5000);
-      const timeout = Promise.withResolvers<void>();
-      const timer = setTimeout(timeout.resolve, 10_000);
-      await Promise.race([active.execution.exit.catch(() => null), timeout.promise]);
-      clearTimeout(timer);
-      this.active = undefined;
+      await active.terminate();
+      await active.execution.exit.catch(() => null);
       await ctx.emit('compute', `Локальный процесс ${pid} остановлен`);
       return;
     }
