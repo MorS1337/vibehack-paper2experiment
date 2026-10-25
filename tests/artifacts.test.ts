@@ -89,11 +89,10 @@ async function writeFixture(root: string, metricsOverride?: Record<string, numbe
   })).flat();
   await writeFile(path.join(artifacts, 'samples.csv'), ['trial,successes,n,p,epsilon', ...rows].join('\n') + '\n');
   await writeFile(path.join(artifacts, 'metrics.json'), JSON.stringify(metricsOverride ?? fixtureMetrics(tails), null, 2));
-  await writeFile(path.join(artifacts, 'plot.svg'), `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><title>empirical vs Hoeffding</title><desc>Fixture series for artifact validation; not a scientific result.</desc><polyline points="10,10 20,20"/><polyline points="10,30 20,40"/><circle cx="10" cy="10" r="2"/><circle cx="20" cy="20" r="2"/></svg>`);
   await writeFile(path.join(project, 'main.py'), 'print("fixture")\n');
   await writeFile(path.join(project, 'requirements.txt'), '# stdlib only\n');
   await writeFile(path.join(project, 'config.json'), JSON.stringify({ p: config.p, epsilon: config.epsilon, n_values: config.nValues, trials_per_n: config.trialsPerN, seed: config.seed, primary_n: config.primaryN, tail_side: 'greater' }, null, 2));
-  await writeFile(path.join(project, 'experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json', 'samples.csv', 'plot.svg'] }, null, 2));
+  await writeFile(path.join(project, 'experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json', 'samples.csv'] }, null, 2));
   await writeFile(path.join(project, 'stdout.log'), 'fixture completed\n');
   await writeFile(path.join(project, 'stderr.log'), '');
   return runFor(root);
@@ -108,12 +107,13 @@ async function withRoot(work: (root: string) => Promise<void>): Promise<void> {
   }
 }
 
-test('recomputes the demo primary metric and hashes all artifacts', async () => {
+test('verifies numeric scientific evidence without requiring a generated plot', async () => {
   await withRoot(async root => {
     const result = await collectAndValidate(await writeFixture(root));
     assert.equal(result.metrics.empirical_tail_probability, 0.5);
     assert.equal(result.metrics.hoeffding_bound, Math.exp(-2 * 4 * 0.25));
     assert.ok(result.artifacts.some(artifact => artifact.path === 'project/artifacts/samples.csv' && artifact.sha256.length === 64));
+    assert.equal(result.artifacts.some(artifact => artifact.kind === 'plot'), false);
     assert.ok(result.verification.includes('Независимая проверка'));
   });
 });
@@ -163,7 +163,7 @@ test('rejects scientific config drift from the frozen plan', async () => {
 test('rejects manifest traversal', async () => {
   await withRoot(async root => {
     const run = await writeFixture(root);
-    await writeFile(path.join(root, 'project/experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json', '../escape.txt', 'plot.svg'] }));
+    await writeFile(path.join(root, 'project/experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json', '../escape.txt', 'samples.csv'] }));
     await assert.rejects(collectAndValidate(run), /подозрительный путь|обход/);
   });
 });
@@ -193,7 +193,20 @@ test('rejects duplicate trials instead of trusting row counts', async () => {
 test('rejects a missing declared output', async () => {
   await withRoot(async root => {
     const run = await writeFixture(root);
-    await unlink(path.join(root, 'project/artifacts/plot.svg'));
+    await unlink(path.join(root, 'project/artifacts/samples.csv'));
     await assert.rejects(collectAndValidate(run), /Обязательный артефакт.*не найден/s);
+  });
+});
+
+test('explicit SVG exports remain collectable but executable exports are rejected', async () => {
+  await withRoot(async root => {
+    const run = await writeFixture(root);
+    const file = path.join(root, 'project/artifacts/export.svg');
+    await writeFile(path.join(root, 'project/experiment.json'), JSON.stringify({ entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json', 'samples.csv', 'export.svg'] }));
+    await writeFile(file, '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="20"/></svg>');
+    const result = await collectAndValidate(run);
+    assert.ok(result.artifacts.some(artifact => artifact.path === 'project/artifacts/export.svg'));
+    await writeFile(file, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    await assert.rejects(collectAndValidate(run), /исполняемый контент/);
   });
 });

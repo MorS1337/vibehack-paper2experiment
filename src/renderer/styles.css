@@ -238,8 +238,12 @@ blockquote {
   user-select: none;
 }
 .brand-mark {
-  font-size: 19px;
-  color: var(--accent);
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  background: var(--accent);
+  mask: url("/methodiy-mark.svg") center / contain no-repeat;
 }
 .new-session-button {
   text-align: left;
@@ -388,7 +392,14 @@ blockquote {
   font-size: 13px;
   opacity: 0.65;
 }
-.workspace-tabs .paper-toggle[aria-pressed="true"] {
+.heading-actions .paper-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.heading-actions .paper-toggle[aria-pressed="true"] {
   color: var(--accent);
 }
 .evidence-mark {
@@ -746,6 +757,137 @@ blockquote {
   padding: 15px 17px;
   background: transparent;
   font-size: 13px;
+}
+.dictation-button {
+  position: absolute;
+  right: 52px;
+  bottom: 12px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  border: 1px solid transparent;
+}
+.dictation-button:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--border);
+  background: transparent;
+}
+.chat-composer {
+  position: relative;
+}
+.dictation-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -2px 10px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+  animation: dictation-in 140ms ease-out;
+}
+.dictation-strip.is-recording {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.dictation-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.dictation-device {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+.record-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--error);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.dictation-meter {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  flex: 1;
+  min-width: 48px;
+  max-width: 180px;
+}
+.dictation-meter i {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
+  transition: height 70ms linear;
+  height: 12%;
+}
+.dictation-clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.dictation-clock.is-ending {
+  color: var(--warning);
+}
+.dictation-limit {
+  font-size: 10px;
+  white-space: nowrap;
+}
+.dictation-cancel,
+.dictation-done {
+  font-size: 10px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.dictation-cancel {
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.dictation-done {
+  background: var(--accent);
+  color: var(--bg);
+}
+.dictation-done:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+.dictation-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 12px 8px;
+  padding: 7px 10px;
+  border-left: 2px solid var(--error);
+  color: var(--error);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.dictation-error button {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+@keyframes dictation-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .composer-footer {
   display: flex;

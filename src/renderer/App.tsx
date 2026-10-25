@@ -24,9 +24,14 @@ import { SettingsView } from "./components/SettingsView.js";
 import { Conversation, FilePreview } from "./components/Conversation.js";
 import { NewExperiment } from "./components/NewExperiment.js";
 import { RichMessage } from "./components/RichMessage.js";
+import {
+  DictationControl,
+  DictationError,
+} from "./components/DictationControl.js";
+import { useVoiceTask } from "./hooks/useVoiceTask.js";
+import { insertTranscript } from "./lib/dictation.js";
 import { STATUS_META } from "./lib/status.js";
 import { PaperContext } from "./lib/paper-context.js";
-import { useVoiceTask } from "./hooks/useVoiceTask.js";
 
 // PDF rendering is a browser-only, on-demand surface, not part of the initial UI bundle.
 const PaperPane = lazy(() => import("./components/PaperPane.js"));
@@ -34,14 +39,13 @@ import "./styles.css";
 
 type View = "chat" | "plan" | "files" | "settings" | "new";
 const views: {
-  id: "chat" | "plan" | "paper" | "files";
+  id: "chat" | "plan" | "files";
   label: string;
   shortcut: number;
 }[] = [
   { id: "chat", label: "Research", shortcut: 1 },
   { id: "plan", label: "Protocol", shortcut: 2 },
-  { id: "paper", label: "Paper", shortcut: 3 },
-  { id: "files", label: "Evidence", shortcut: 4 },
+  { id: "files", label: "Evidence", shortcut: 3 },
 ];
 
 function mergeBlocks(
@@ -316,11 +320,18 @@ function AppShell({ api }: { api: AppAPI }) {
   const [operation, setOperation] = useState(false);
   const [draft, setDraft] = useState("");
   const [delivery, setDelivery] = useState<"steer" | "followUp">("steer");
-  const selected = useRef(selectedId);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const voice = useVoiceTask(api, (text) =>
-    setDraft((previous) => previous ? `${previous}\n${text}` : text),
-  );
+  const voice = useVoiceTask(api, (transcript) => {
+    // Insert at the caret: dictation edits text, it never sends it.
+    const field = textarea.current;
+    const start = field?.selectionStart ?? draft.length;
+    const end = field?.selectionEnd ?? start;
+    setDraft(
+      (current) => insertTranscript(current, start, end, transcript).text,
+    );
+    requestAnimationFrame(() => textarea.current?.focus());
+  });
+  const selected = useRef(selectedId);
   useEffect(() => { voice.cancel(); }, [selectedId, view, voice.cancel]);
   selected.current = selectedId;
   const refresh = useCallback(async () => {
@@ -528,6 +539,12 @@ function AppShell({ api }: { api: AppAPI }) {
   };
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.key === "Escape" && voice.phase !== "idle") {
+        event.preventDefault();
+        voice.cancel();
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         setDraftId(null);
@@ -537,21 +554,20 @@ function AppShell({ api }: { api: AppAPI }) {
       }
       if (
         (event.metaKey || event.ctrlKey) &&
-        ["1", "2", "3", "4", "5"].includes(event.key)
+        ["1", "2", "3", "5"].includes(event.key)
       ) {
+        if (showNew && event.key !== "5") return;
         event.preventDefault();
-        if (event.key === "3") setPaperOpen((previous) => !previous);
-        else
-          setView(
-            (
-              {
-                "1": "chat",
-                "2": "plan",
-                "4": "files",
-                "5": "settings",
-              } as Record<string, View>
-            )[event.key],
-          );
+        setView(
+          (
+            {
+              "1": "chat",
+              "2": "plan",
+              "3": "files",
+              "5": "settings",
+            } as Record<string, View>
+          )[event.key],
+        );
       }
       if (event.key === "Escape" && active && run) {
         event.preventDefault();
@@ -563,7 +579,7 @@ function AppShell({ api }: { api: AppAPI }) {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [api, active, run, refresh]);
+  }, [api, active, run, refresh, showNew, voice.phase, voice.cancel]);
   const hasPaper = !!paperRun?.source && view !== "settings";
   const splitPaper = hasPaper && paperOpen;
   return (
@@ -571,8 +587,8 @@ function AppShell({ api }: { api: AppAPI }) {
       <div className="harness-app">
         <aside className="vertical-rail" aria-label="Workspace navigation">
           <div className="rail-brand">
-            <span className="brand-mark">p₂</span>
-            <span>paper2experiment</span>
+            <span className="brand-mark" aria-hidden="true" />
+            <span>Methodiy AI</span>
           </div>
           <button
             className={`new-session-button${view === "new" ? " selected" : ""}`}
@@ -666,36 +682,11 @@ function AppShell({ api }: { api: AppAPI }) {
                   <button
                     key={item.id}
                     type="button"
-                    className={
-                      item.id === "paper"
-                        ? "paper-toggle"
-                        : view === item.id
-                          ? "is-current"
-                          : ""
-                    }
-                    aria-current={
-                      item.id !== "paper" && view === item.id
-                        ? "page"
-                        : undefined
-                    }
-                    aria-pressed={item.id === "paper" ? paperOpen : undefined}
-                    disabled={item.id === "paper" && !run?.source}
-                    title={
-                      item.id === "paper"
-                        ? `${paperOpen ? "Hide" : "Show"} source PDF · ⌘3`
-                        : `${item.label} · ⌘${item.shortcut}`
-                    }
-                    onClick={() => {
-                      if (item.id === "paper")
-                        setPaperOpen((previous) => !previous);
-                      else setView(item.id);
-                    }}
+                    className={view === item.id ? "is-current" : ""}
+                    aria-current={view === item.id ? "page" : undefined}
+                    title={`${item.label} · ⌘${item.shortcut}`}
+                    onClick={() => setView(item.id)}
                   >
-                    {item.id === "paper" ? (
-                      <span className="paper-toggle-mark" aria-hidden="true">
-                        ▤
-                      </span>
-                    ) : null}
                     {item.label}
                     {item.id === "plan" && run?.spec ? (
                       <span className="tab-detail">v{run.planVersion}</span>
@@ -711,27 +702,31 @@ function AppShell({ api }: { api: AppAPI }) {
               </nav>
             )}
             <div className="heading-actions">
-              {showNew ? (
-                hasPaper ? (
-                  <button
-                    type="button"
-                    className="quiet-button"
-                    onClick={() => setPaperOpen((previous) => !previous)}
-                    aria-pressed={paperOpen}
-                  >
-                    {paperOpen ? "Hide paper" : "Show paper"} ▤
-                  </button>
-                ) : (
-                  <span className="header-state">
-                    {newPaper?.status === "importing"
-                      ? "Importing source…"
-                      : "Source first"}
-                  </span>
-                )
-              ) : run && view !== "settings" ? (
+              {showNew && !hasPaper ? (
+                <span className="header-state">
+                  {newPaper?.status === "importing"
+                    ? "Importing source…"
+                    : "Source first"}
+                </span>
+              ) : run && !showNew && view !== "settings" ? (
                 <span className="header-state" title={run.title}>
                   {active ? "Working" : STATUS_META[run.status].label}
                 </span>
+              ) : null}
+              {hasPaper ? (
+                <button
+                  type="button"
+                  className="paper-toggle"
+                  aria-label={paperOpen ? "Hide paper" : "Show paper"}
+                  aria-pressed={paperOpen}
+                  title={paperOpen ? "Hide source PDF" : "Show source PDF"}
+                  onClick={() => setPaperOpen((previous) => !previous)}
+                >
+                  <span className="paper-toggle-mark" aria-hidden="true">
+                    ▤
+                  </span>
+                  Paper
+                </button>
               ) : null}
             </div>
           </header>
@@ -910,6 +905,14 @@ function AppShell({ api }: { api: AppAPI }) {
                             disabled={otherActive}
                             onKeyDown={(event) => {
                               if (
+                                event.key === "Escape" &&
+                                voice.phase !== "idle"
+                              ) {
+                                event.preventDefault();
+                                voice.cancel();
+                                return;
+                              }
+                              if (
                                 event.key === "Enter" &&
                                 !event.shiftKey &&
                                 !event.nativeEvent.isComposing
@@ -919,8 +922,19 @@ function AppShell({ api }: { api: AppAPI }) {
                               }
                             }}
                           />
-                          {voice.error ? <p className="error-text" role="alert">{voice.error}</p> : null}
-                          {voice.phase !== "idle" ? <p role="status">{voice.phase === "requesting" ? "Requesting microphone…" : voice.phase === "transcribing" ? "Transcribing…" : `${voice.device} · ${voice.elapsed}s recorded · ${voice.remaining}s left`}</p> : null}
+                          <DictationControl
+                            state={voice}
+                            disabled={otherActive || operation}
+                            onStart={() => void voice.start()}
+                            onStop={() => void voice.stop()}
+                            onCancel={voice.cancel}
+                          />
+                          {voice.error ? (
+                            <DictationError
+                              message={voice.error}
+                              onDismiss={voice.clearError}
+                            />
+                          ) : null}
                           <div className="composer-footer">
                             <button
                               className="model-button"
@@ -932,14 +946,6 @@ function AppShell({ api }: { api: AppAPI }) {
                               {snapshot?.settings.piModel || "available model"}
                             </button>
                             <span className="composer-spacer" />
-                            <button
-                              type="button"
-                              disabled={otherActive || operation || voice.phase === "requesting" || voice.phase === "transcribing"}
-                              onClick={() => void (voice.phase === "recording" ? voice.stop() : voice.start())}
-                            >
-                              {voice.phase === "recording" ? "Stop recording" : "Dictate"}
-                            </button>
-                            {voice.phase !== "idle" ? <button type="button" onClick={voice.cancel}>Cancel dictation</button> : null}
                             {active ? (
                               <>
                                 <select
@@ -1149,7 +1155,7 @@ export function App() {
     <AppShell api={api} />
   ) : (
     <div className="bridge-unavailable">
-      <h1>Open Paper2Experiment in Electron.</h1>
+      <h1>Open Methodiy AI in Electron.</h1>
       <p>The browser preview cannot access the research harness.</p>
       <code>npm run dev</code>
     </div>

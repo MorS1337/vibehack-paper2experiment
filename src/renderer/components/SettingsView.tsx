@@ -204,22 +204,24 @@ export function SettingsView({ api, snapshot, busy, onSave, onRefresh }: Setting
               >
                 <div className="integration-head">
                   <div>
-                    <h3>{meta.label}</h3>
-                    <p>{meta.purpose}</p>
+                    <h3>{component === 'vast' ? 'Vast · заглушка' : meta.label}</h3>
+                    <p>{component === 'vast' ? 'Платный удалённый запуск отключён' : meta.purpose}</p>
                   </div>
                   <Badge tone={stateMeta?.tone ?? 'neutral'}>
                     {stateMeta?.label ?? 'Нет данных'}
                   </Badge>
                 </div>
                 <p className="integration-detail">
-                  {!connection
+                  {component === 'vast'
+                    ? 'Vast — заглушка, платный запуск отключён'
+                    : !connection
                     ? 'Статус не получен от нативного моста.'
                     : connection.detail?.trim() ||
                       (connection.state === 'ready'
                         ? 'Компонент доступен; дополнительных указаний нет.'
                         : 'Нет подробностей. Проверьте инструкцию ниже.')}
                 </p>
-                <p className="integration-instruction">{meta.instruction}</p>
+                <p className="integration-instruction">{component === 'vast' ? 'Используйте Local Python; платные ресурсы не создаются.' : meta.instruction}</p>
               </article>
             );
           })}

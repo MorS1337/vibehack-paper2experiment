@@ -5,6 +5,7 @@ import type {
   ExperimentRun,
 } from "../../shared/types.js";
 import { useVoiceTask } from "../hooks/useVoiceTask.js";
+import { DictationControl, DictationError } from "./DictationControl.js";
 import { errorMessage } from "../lib/api.js";
 
 // A decorative, deterministic field: not a chart and not represented as measured data.
@@ -147,7 +148,7 @@ export function NewExperiment({
         <>
           <ResearchField />
           <div className="new-heading">
-            <span className="eyebrow">PAPER2EXPERIMENT</span>
+            <span className="eyebrow">METHODIY AI</span>
             <h1>Start with the paper.</h1>
             <p>
               First, bring in the source. Then tell us which claim to reproduce
@@ -264,7 +265,16 @@ export function NewExperiment({
             </div>
             {agentMode === "demo" ? <p role="note">Fixed local demo: the protocol and code are built-in stubs for the Bernoulli–Hoeffding example; Python execution and measurements are real. Select “Pi · real model” below for model-generated research. No API key is needed for the demo.</p> : null}
           </div>
-          <form onSubmit={(event) => void start(event)}>
+          <form
+            onSubmit={(event) => void start(event)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && voice.phase !== "idle") {
+                event.preventDefault();
+                event.stopPropagation();
+                voice.cancel();
+              }
+            }}
+          >
             <label className="field-label" htmlFor="new-objective">
               Reproduction objective
             </label>
@@ -289,29 +299,13 @@ export function NewExperiment({
               maxLength={16000}
             />
             <div className="composer-tools">
-              <button
-                type="button"
-                disabled={
-                  disabled || working || voice.phase === "requesting" || voice.phase === "transcribing"
-                }
-                onClick={() =>
-                  void (voice.phase === "recording"
-                    ? voice.stop()
-                    : voice.start())
-                }
-              >
-                {voice.phase === "requesting"
-                  ? "Requesting microphone…"
-                  : voice.phase === "recording"
-                    ? `Stop recording · ${voice.elapsed}s / ${voice.remaining}s left`
-                    : voice.phase === "transcribing"
-                      ? "Transcribing…"
-                      : "Dictate context"}
-              </button>
-              {voice.phase !== "idle" ? (
-                <button type="button" onClick={voice.cancel}>Cancel dictation</button>
-              ) : null}
-              {voice.device ? <span role="status">{voice.device}</span> : null}
+              <DictationControl
+                state={voice}
+                disabled={disabled || working}
+                onStart={() => void voice.start()}
+                onStop={() => void voice.stop()}
+                onCancel={voice.cancel}
+              />
               {paper?.input.source.includes("1910.02884") ? (
                 <button
                   type="button"
@@ -329,7 +323,12 @@ export function NewExperiment({
                 </button>
               ) : null}
             </div>
-            {voice.error ? <p className="error-text">{voice.error}</p> : null}
+            {voice.error ? (
+              <DictationError
+                message={voice.error}
+                onDismiss={voice.clearError}
+              />
+            ) : null}
             <details className="experiment-options">
               <summary>
                 Data, code &amp; execution limits{" "}
@@ -362,7 +361,7 @@ export function NewExperiment({
                     }
                   >
                     <option value="local">Local</option>
-                    <option value="vast">Vast.ai</option>
+                    <option value="vast" disabled>Vast — заглушка, платный запуск отключён</option>
                     <option value="auto">Auto · Jev selection</option>
                   </select>
                 </label>

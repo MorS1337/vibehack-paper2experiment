@@ -146,61 +146,6 @@ def binomial_upper_tail(n: int, p: float, threshold: int, log_facts: list[float]
     return min(1.0, max(0.0, total))
 
 
-def render_plot(n_values: list[int], empirical: list[float], bounds: list[float], exact: list[float], primary_n: int) -> str:
-    width, height = 760, 460
-    left, top, right, bottom = 78, 58, 784 - 28, 460 - 64
-    plot_width = right - left
-    plot_height = bottom - top
-    x_at = lambda index: left + (plot_width * index / (len(n_values) - 1))
-    y_at = lambda value: top + (1.0 - value) * plot_height
-    parts = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
-        'font-family="ui-sans-serif, system-ui, sans-serif" data-demo="bernoulli-hoeffding">',
-        f"<title>Bernoulli/Hoeffding demo: empirical tail vs Hoeffding bound (primary n={primary_n})</title>",
-        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#fbfaf7"/>',
-        f'<text x="{left}" y="28" font-size="18" font-weight="600" fill="#1f2937">Bernoulli one-sided tail: empirical vs Hoeffding bound</text>',
-        f'<text x="{left}" y="46" font-size="12" fill="#4b5563">Independent simulation; p known; epsilon fixed; higher n concentrates</text>',
-    ]
-    for step in range(5):
-        value = step / 4
-        y = y_at(value)
-        parts.append(f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="#e5e7eb" stroke-width="1"/>')
-        parts.append(f'<text x="{left - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="11" fill="#6b7280">{value:.2f}</text>')
-    parts.extend([
-        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bottom}" stroke="#6b7280" stroke-width="1"/>',
-        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#6b7280" stroke-width="1"/>',
-        f'<text x="{left}" y="{height - 20}" font-size="11" fill="#6b7280">sample size n</text>',
-        f'<text x="16" y="{top - 12}" font-size="11" fill="#6b7280">tail probability</text>',
-    ])
-    for index, n in enumerate(n_values):
-        x = x_at(index)
-        parts.append(f'<text x="{x:.2f}" y="{bottom + 20}" text-anchor="middle" font-size="11" fill="#4b5563">{n}</text>')
-
-    series = [
-        ("empirical", empirical, "#2563eb", "circle"),
-        ("Hoeffding bound", bounds, "#dc2626", "square"),
-        ("exact binomial tail", exact, "#059669", "cross"),
-    ]
-    for label, values, color, marker in series:
-        points = " ".join(f"{x_at(index):.2f},{y_at(value):.2f}" for index, value in enumerate(values))
-        parts.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="2"/>')
-        for index, value in enumerate(values):
-            x, y = x_at(index), y_at(value)
-            title = f"<title>{label}: n={n_values[index]}, probability={value:.6f}</title>"
-            if marker == "circle":
-                parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" fill="{color}">{title}</circle>')
-            elif marker == "square":
-                parts.append(f'<rect x="{x - 4:.2f}" y="{y - 4:.2f}" width="8" height="8" fill="none" stroke="{color}" stroke-width="2">{title}</rect>')
-            else:
-                parts.append(f'<path d="M{x - 4:.2f},{y:.2f} L{x + 4:.2f},{y:.2f} M{x:.2f},{y - 4:.2f} L{x:.2f},{y + 4:.2f}" stroke="{color}" stroke-width="2">{title}</path>')
-    legend_x, legend_y = left + 18, top + 18
-    for row, (label, _values, color, _marker) in enumerate(series):
-        y = legend_y + row * 20
-        parts.append(f'<rect x="{legend_x}" y="{y - 9}" width="12" height="12" fill="{color}"/>')
-        parts.append(f'<text x="{legend_x + 18}" y="{y}" font-size="12" fill="#374151">{label}</text>')
-    parts.append("</svg>")
-    return "\n".join(parts) + "\n"
 
 
 def main() -> int:
@@ -277,10 +222,6 @@ def main() -> int:
     (artifacts_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    (artifacts_dir / "plot.svg").write_text(
-        render_plot(config["n_values"], empirical, bounds, exact, config["primary_n"]),
-        encoding="utf-8",
-    )
 
     summary = {
         "demo": "bernoulli-hoeffding",
@@ -299,7 +240,6 @@ def main() -> int:
     print(json.dumps(summary, indent=2, sort_keys=True))
     print(f"wrote {samples_path} ({metrics['total_rows']} rows)")
     print(f"wrote {artifacts_dir / 'metrics.json'}")
-    print(f"wrote {artifacts_dir / 'plot.svg'}")
     return 0
 
 
