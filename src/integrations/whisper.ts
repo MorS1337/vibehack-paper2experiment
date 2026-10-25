@@ -196,6 +196,7 @@ export async function transcribe(audio: Uint8Array, settings: AppSettings, signa
   const wavPath = path.join(directory, 'dictation.wav');
   try {
     await writeFile(wavPath, audio, { mode: 0o600 });
+    signal?.throwIfAborted();
     const child = spawn(binary, ['-l', 'ru', '-m', model.file, '-f', wavPath, '-nt', '-np'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -225,6 +226,7 @@ export async function transcribe(audio: Uint8Array, settings: AppSettings, signa
     signal?.addEventListener('abort', onAbort, { once: true });
     child.once('close', (code, termination) => finished.resolve({ stdout, stderr, code, signal: termination, timedOut }));
     child.once('error', error => finished.reject(error));
+    if (signal?.aborted) onAbort();
     let run: WhisperRun;
     try {
       run = await finished.promise;

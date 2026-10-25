@@ -14,6 +14,7 @@ const referenceDir = path.join(repoRoot, 'demos/bernoulli-hoeffding/reference');
 const demoSpec = SpecSchema.parse(JSON.parse(await readFile(path.join(repoRoot, 'demos/bernoulli-hoeffding/spec.json'), 'utf8'))) as ExperimentSpec;
 
 const input: ExperimentInput = {
+  agentMode: 'demo',
   source: 'https://arxiv.org/abs/1910.02884',
   task: 'Bernoulli/Hoeffding local smoke run',
   mode: 'local',

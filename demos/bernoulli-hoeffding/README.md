@@ -4,11 +4,11 @@ This is a small, fully specified scientific demo for Paper2Experiment. It tests 
 theorem, not a reported experimental number, so the harness can honestly separate
 "the process finished" from "the paper's result was reproduced".
 
-> **Verification status:** the analytic bound/exact-tail numbers below were
-> computed from the declared parameters. The reference baseline and the app path
-> through OpenCode/LocalBackend are run by the parent integration pass; the
-> numbers measured by that pass are not yet recorded here. Do not replace them
-> with fixture values.
+> **Verification:** the reference Python project was executed through the real
+> LocalBackend: 50,000 sample rows, primary empirical probability **0.0234**
+> (234/10,000), independently recomputed from CSV. The exact tail is
+> **0.023883498014142024**, the Hoeffding bound **0.1289926310365194**.
+> Pi model-driven code generation was not exercised: no provider credentials.
 
 ## Scientific claim
 
@@ -84,11 +84,10 @@ tightness claim.
 ## Independent implementation
 
 The reference simulator in `reference/` is a transparent baseline for smoke
-tests and manual reproduction. It is intentionally not the OpenCode worker
-result. The product flow must ask the coding worker to create its own project in
-the run's `project/` directory, and its output must satisfy `CONTRACT.md`.
-The harness's independent verifier recomputes the primary metric from the
-worker's `samples.csv`; it never trusts `metrics.json` for that value.
+tests and manual reproduction, not evidence of model-generated code. In the
+normal product flow pi creates its own project under the run's `project/`
+directory, satisfying `CONTRACT.md`. The independent verifier recomputes the
+primary metric from `samples.csv`; it never trusts `metrics.json` for that value.
 
 No author code exists for this check. `implementation: "independent"` and
 `publishedValue: null` are deliberate. The demo does **not** claim to reproduce

@@ -3,8 +3,8 @@
 
 This is an independent implementation of Hoeffding's one-sided bound for
 independent Bernoulli(p) observations. It is used to smoke-test the harness and
-as a transparent scientific baseline for the expected artifacts. It is NOT a
-drop-in worker result and must not be presented as OpenCode output.
+as a transparent scientific baseline for the expected artifacts. It is NOT
+evidence that pi generated the implementation.
 
 Python 3.10+ standard library only. Determinism is explicit: random words come
 from SplitMix64 seeded with config.seed; no platform RNG is involved.

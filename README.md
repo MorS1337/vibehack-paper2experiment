@@ -1,395 +1,284 @@
 # Paper2Experiment
 
-Local-first desktop research harness. Add a scientific paper, describe an
-experiment in text or voice, connect your own LLM, and get a runnable Python
-project executed locally or on a Vast.ai instance, with code, config, logs,
-numeric metrics, an independently validated result, and a report.
+Desktop research harness: текстовый PDF/arXiv → версионированный научный план →
+код Python → реальное локальное исполнение → артефакты и проверяемый результат.
+Electron + React; ядро, интеграции и оркестрация — TypeScript.
 
-This is the first working vertical slice: one user, one active experiment, one
-coding worker, one Vast instance, and one supported cloud image. It is not a
-sandbox and it does not promise that a successful run reproduces a paper.
+**Текущий MVP по умолчанию работает с явными заглушками агента и без внешних
+ключей.** План берётся из фиксированного демо, подготовка кода копирует открытый
+эталонный Python. Сам Python, логи, метрики и независимый пересчёт — настоящие.
+Это не выдаётся за анализ статьи или генерацию кода LLM. В демо доступен только Local.
 
-## Status of verification
+Режим **«Настоящий Pi»** оставлен отдельно: pi сам планирует и пишет код; отдельного
+coding worker нет. Арендой, исполнением и лимитами управляет harness, не модель.
+Работу над Whisper продолжает тиммейт; текущая реализация оставлена как есть.
 
-This file distinguishes what was actually executed from what is implemented and
-configured but not yet exercised. The final integration pass is run by the
-maintainer; rows marked **NOT YET VERIFIED** must not be read as confirmed.
+## Запуск
 
-| Area | Status |
-| --- | --- |
-| TypeScript build, unit tests, smoke script | **NOT YET VERIFIED** in this delivery; run the commands below. |
-| Electron window and narrow IPC | **NOT YET VERIFIED** in this delivery. |
-| Local PDF/arXiv import | **NOT YET VERIFIED** end to end; source extraction code is real and text-only. |
-| Real pi model plan/report | **NOT EXERCISED**: no provider credentials were available during development. |
-| OpenCode headless worker | **NOT EXERCISED with a model**: server/auth probing is implemented; no provider login was available. |
-| LocalBackend real execution and artifacts | **NOT YET VERIFIED** in this delivery; smoke drives the real backend. |
-| Bernoulli/Hoeffding demo | **NOT YET RUN** through the app in this delivery. Analytic values are in the demo README; measured values must be recorded after execution. |
-| Vast.ai lifecycle | **NOT EXERCISED**: no account, key, or budget. No instance was rented. |
-| Jev choice | **NOT EXERCISED**: no `TYPESAFE_API_KEY`. |
-| Whisper Russian transcription | **NOT YET VERIFIED**; build/record instructions are below. |
-| SmartCompact extension load | **NOT YET VERIFIED**; short sessions may legitimately perform no compaction. |
-
-No paid provisioning occurred during development. Local mode needs no API key
-and no Vast account.
-
-## Quick start
-
-Requirements: Node.js **>= 22.19.0**, npm, Python 3.10+ for the demo, and the
-platform build tools needed by native dependencies.
+Требования: Node.js **>=22.19.0**, npm, Python **3.10+** с `venv`/`ensurepip`.
+Для Vast нужны OpenSSH (`ssh`, `scp`, `ssh-keygen`) и `tar`.
 
 ```sh
 npm ci
 npm run build
-npm start          # production build in Electron
-# or
-npm run dev        # build and start
+npm start
+# либо сборка и запуск одной командой
+npm run dev
 ```
 
-Useful checks:
+Первый запуск может скачать бинарник Electron. `npm start` запускает
+production-сборку, а не web-имитацию desktop-приложения.
+
+### Быстрый демосценарий без ключей
+
+1. Нажмите **«Новый эксперимент» → «Заполнить демо Хёффдинга»**.
+2. Оставьте **«Демо · заглушки»** и **Local**. Для импорта исходного arXiv PDF
+   нужен интернет; можно заранее скачать тот же PDF и выбрать локальный файл.
+3. **«Создать эксперимент»**, затем **«Сформировать план»**. План явно помечен заглушкой.
+4. При желании измените параметры/лимиты и сохраните версию. Метод демо фиксирован.
+5. **«Запустить эксперимент»**. После настоящего Python-запуска откройте
+   **«Результаты»**: метрика, CSV, график, конфиг, логи и независимая проверка.
+
+Заглушка знает только `arXiv:1910.02884v1` и не интерпретирует свободную задачу.
+Другая статья/метод требуют настоящего режима Pi. В демо нельзя создать Vast/Auto
+запуск даже с ненулевым бюджетом; аренда никогда не начинается.
 
 ```sh
 npm run typecheck
-npm test           # behavioral tests (node:test via tsx)
-npm run smoke      # real LocalBackend + artifacts + cancel/timeout/history probes
+npm test
+npm run smoke
+npm audit --omit=dev
 ```
 
-`npm run smoke` uses only the local Python reference project. It does not call an
-LLM, Jev, Vast, or any paid API, and it removes its temporary directories.
+`smoke` запускает настоящий Python через LocalBackend, независимо пересчитывает
+метрику из CSV, проверяет отмену, таймаут и восстановление истории. Внешние модели,
+Jev и Vast не вызываются, временные директории удаляются.
 
-## First-run configuration
+## Что реально проверено
 
-The app stores local state under Electron's `userData` directory plus
-`research/` (on macOS typically
-`~/Library/Application Support/paper2experiment/research`; check the Settings
-panel or set `PAPER2_STATE_DIR` to use another directory). Runs are immutable
-JSON snapshots plus `events.jsonl`; a run directory contains `source/`, `plans/`,
-`project/`, `artifacts/` and `report.md`.
-
-Copy [`settings.example.json`](settings.example.json) to the app's settings
-store only if you prefer editing JSON; the Settings panel is the normal path.
-It contains no secrets. Secrets are read from the user's existing tool
-configuration or environment and never enter the renderer or experiment
-project.
-
-| Setting | Meaning |
+| Путь | Наблюдение |
 | --- | --- |
-| `piProvider`, `piModel` | pi coordinator provider/model. Auth is pi's own. |
-| `openCodeModel` | OpenCode worker model in `provider/model` form. Auth is OpenCode's own. |
-| `python` | Python executable used for local virtual environments. |
-| `whisperBinary`, `whisperModel` | Local `whisper-cli` and a multilingual GGML model. |
-| `sshKeyPath` | Private key used only by the Vast backend. |
+| LocalBackend | Реальный Python, venv, завершение с кодом 0; конфиг, метрики, график, выборки и логи собраны. |
+| Научный демо-кейс | 50 000 строк CSV; основная вероятность `0.0234` независимо пересчитана как `234/10000`. |
+| Отмена/таймаут | Реальные процессы остановлены; проверено отсутствие живого процесса после остановки. |
+| История | JSON-состояние и JSONL-события восстановлены новым экземпляром хранилища. |
+| arXiv/PDF | `1910.02884v1`: 17 текстовых страниц, сохранены PDF/извлечённый текст, проверен SHA-256. |
+| Whisper | Реальный whisper.cpp 1.9.5 и многоязычная `tiny`: расшифрована русская WAV-запись 5.1 с; научное имя распознано неточно, текст требует редактирования. |
+| SmartCompact | Настоящий пакет 0.1.8 загружен через pi: одно расширение, ноль ошибок/предупреждений. Compaction не форсировался. |
+| Pi inference/генерация кода | **Не проверены**: нет настроенной авторизации модели. |
+| Vast: read-only поиск | Нативный ключ обнаружен: получено 100 фактических предложений, 6 прошли фильтры. Provisioning/SSH не выполнялись; платного бюджета не задано. Jev не вызывался без TYPESAFE_API_KEY. |
 
-### pi authentication (independent from OpenCode)
+Полный демопуть использует явно обозначенные заглушки плана/кода, но не подставляет
+метрики. В режиме Pi эталон не копируется и не выдаётся за генерацию модели.
+Итоговая проверка desktop/build/tests приведена в таблице после наблюдаемого прогона.
 
-The repo pins `@earendil-works/pi-coding-agent@1.4.0`. The local CLI is
-`./node_modules/.bin/pi`. Authenticate with pi's own flow:
+## Настройки и авторизация
+
+Панель настроек показывает пять независимых компонентов: pi, Jev, Vast, Whisper,
+SmartCompact. Ключи не вводятся в renderer, не сохраняются в настройках эксперимента
+и автоматически не отправляются на Vast.
+Для деморежима эти ключи не нужны: реальные статусы подключений не являются блокером локального демо.
+
+[`settings.example.json`](settings.example.json) содержит только безопасные
+настройки: модель pi, пути Python/Whisper/SSH. Основной способ редактирования — UI.
+Состояние хранится в `app.getPath('userData')/research`; на macOS обычно
+`~/Library/Application Support/paper2experiment/research`. Для изолированной
+проверки можно задать `PAPER2_STATE_DIR=/absolute/path`.
+
+### Pi
+
+Закреплён `@earendil-works/pi-coding-agent@1.4.0`. Используются штатные OAuth/API-key
+механизмы pi, его auth storage и поддерживаемые переменные окружения провайдеров.
 
 ```sh
 ./node_modules/.bin/pi
+# в pi:
 /login
 /model
 ```
 
-Credentials are stored by pi (default agent directory `~/.pi/agent/auth.json`,
-or `PI_CODING_AGENT_DIR` if set). Alternatively, provider API keys may come
-from pi-supported environment variables such as `ANTHROPIC_API_KEY`. Logging in
-to pi does **not** authenticate OpenCode, and vice versa. The coordinator uses
-the SDK in-process; the CLI is only for auth/settings inspection.
+Либо задайте поддерживаемый ключ, например `ANTHROPIC_API_KEY`, в окружении запуска.
+В приложении выберите provider/model. Пустые поля означают первую действительно
+доступную модель из pi ModelRuntime, не выдуманный default.
 
-### OpenCode authentication (independent from pi)
-
-The repo pins both `@opencode-ai/sdk@1.19.4` and `opencode-ai@1.19.4`. The
-headless server binary is resolved from `node_modules`, not a global install:
-
-```sh
-./node_modules/.bin/opencode --version      # must print 1.19.4
-./node_modules/.bin/opencode auth login
-./node_modules/.bin/opencode auth list
-```
-
-Standard OpenCode credentials live at
-`~/.local/share/opencode/auth.json` (or environment variables documented by
-OpenCode). The harness links that file into its isolated data home at
-`~/.paper2experiment/opencode-data/opencode/auth.json`; it does not copy keys
-into projects. The model must be `provider/model`, e.g.
-`openrouter/anthropic/claude-sonnet-4` or `opencode/<model>` depending on your
-provider.
+Планирование и отчёт используют сессии без файловых инструментов. Для подготовки
+кода pi получает реальные инструменты `read`, `write`, `edit`, `bash` SDK с cwd
+проекта. Bash получает allowlist окружения без LLM/Vast/Jev ключей. После работы
+модели обычный код проверяет manifest, файлы, конфиг и неизменность научного плана.
 
 ### Jev
 
-Jev (`@typesafe-ai/sdk@0.7.0`) chooses among compute candidates supplied by the
-harness; it never provisions an instance. Get a key from the
-[TypeSafe console](https://console.typesafe.ai/keys) and export it in the
-environment that starts the app:
+`@typesafe-ai/sdk@0.7.0`, настоящий `choice` primitive:
 
 ```sh
 export TYPESAFE_API_KEY=...
 ```
 
-The key is read in the main/harness process only. Without it, Jev reports
-`needs_setup`; Local mode still works. Jev is not required for a local run.
+Ключ выдаётся в [TypeSafe Console](https://console.typesafe.ai/keys).
+Для Vast/Auto Jev выбирает только из небольшого набора уже проверенных вариантов
+и может ответить `none`. Нет ключа/ошибка API — явная ошибка, **не** скрытый выбор
+дешевейшей машины. Local не требует Jev. Auto с положительным облачным бюджетом
+требует успешного поиска Vast; при нулевом бюджете облачные варианты не допускаются.
 
 ### Vast.ai
 
-The Vast integration uses the documented Vast REST API, not the Python SDK.
-Create a key on the [Vast keys page](https://cloud.vast.ai/manage-keys/) and
-either export `VAST_API_KEY` or use the native file Vast's own CLI writes:
+Используется документированный REST API из TypeScript. Ключ: `VAST_API_KEY` либо
+нативный `~/.config/vastai/vast_api_key`, который создаёт Vast CLI. Значение остаётся
+в main/harness-процессе.
 
 ```sh
-# one option; keep the file private
-mkdir -p ~/.config/vastai
-printf '%s\n' "$VAST_API_KEY" > ~/.config/vastai/vast_api_key
-chmod 600 ~/.config/vastai/vast_api_key
-```
-
-Generate an SSH key and add the **public** key to the Vast account (keys apply
-to new instances only):
-
-```sh
-ssh-keygen -t ed25519 -C "paper2experiment" -f ~/.ssh/paper2_vast
+export VAST_API_KEY=...
+ssh-keygen -t ed25519 -f ~/.ssh/paper2_vast -C paper2experiment
 chmod 600 ~/.ssh/paper2_vast
-cat ~/.ssh/paper2_vast.pub
 ```
 
-Set the private-key path in Settings (`sshKeyPath`). The harness uses a
-per-run `known_hosts` with accept-new host keys, not
-`StrictHostKeyChecking=no`.
+Укажите приватный SSH-ключ в настройках. Backend регистрирует соответствующий
+публичный ключ в аккаунте; учётные данные LLM не загружаются. SSH использует
+отдельный `known_hosts` для запуска, `accept-new`, без `StrictHostKeyChecking=no`.
 
-The supported image is
-`pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime`. Offers are filtered in ordinary
-code by required CPU/RAM/VRAM/disk, verified/rentable status, price, and
-storage/network reserves; Jev selects from a small real candidate list. The
-selected offer is re-fetched before creation. No instance is created until the
-user approves the displayed instance, rate, and time limit.
+Один поддерживаемый образ:
+`pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime`.
 
-### Whisper (multilingual, Russian)
+До Jev код фильтрует фактические предложения по CPU/RAM/VRAM/disk, надёжности,
+verified/rentable и бюджетам. `dph_total` учитывается один раз как all-in тариф
+заданного `allocated_storage`. Оценка содержит резерв setup/экспорта и сети.
+Выбранное предложение перепроверяется перед созданием; увеличение утверждённого
+тарифа требует нового выбора. Платный запуск — только после отдельного approval.
 
-Build `whisper.cpp` and download a **multilingual** model (not `.en`):
+### Whisper: русский голосовой ввод
 
 ```sh
 git clone https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp
 cmake -B build
 cmake --build build -j --config Release
-sh ./models/download-ggml-model.sh large-v3-turbo
+sh models/download-ggml-model.sh large-v3-turbo
 ```
 
-`ggml-large-v3-turbo.bin` is multilingual and accepts Russian. Set
-`whisperBinary` to the built `build/bin/whisper-cli` and `whisperModel` to the
-absolute path of `models/ggml-large-v3-turbo.bin`.
-
-CLI check with a recording (convert to 16 kHz mono PCM first):
+Укажите абсолютные пути `build/bin/whisper-cli` и `models/ggml-large-v3-turbo.bin`.
+Для macOS также доступен `brew install whisper-cpp`. Модели `.en` не подходят:
+нужна многоязычная модель. `tiny` использована только для smoke; для русской научной
+диктовки рекомендуется более крупная модель и обязательное чтение расшифровки.
 
 ```sh
 ffmpeg -i record.m4a -ar 16000 -ac 1 -c:a pcm_s16le /tmp/russian.wav
-whisper-cli -m /absolute/path/models/ggml-large-v3-turbo.bin \
-  -f /tmp/russian.wav -l ru -nt
+whisper-cli -m /absolute/path/ggml-large-v3-turbo.bin -f /tmp/russian.wav -l ru -nt
 ```
 
-Suggested Russian test phrase:
-
-> Проверь неравенство Хёффдинга для схемы Бернулли при p = 0.5 и эпсилон = 0.08.
-
-The app records a short message and transcribes it; the text must land in the
-editable task field before the user starts the run. Actual Russian transcription
-is **not yet verified** in this delivery.
+Кнопка микрофона записывает не более 60 секунд. Речь преобразуется в редактируемый
+текст задачи; сама запись никогда не запускает эксперимент. Транскрипция локальная,
+отмена/закрытие приложения завершают child process и удаляют временный WAV.
 
 ### SmartCompact
 
-`smartcompact@0.1.8` is a dependency and its package declares the pi extension
-at `adapters/pi/index.ts`. The harness loads that real extension through pi's
-extension mechanism and surfaces its events; it is not a renderer shim. For a
-separate pi CLI install:
+`smartcompact@0.1.8` из [coffeecoproject/SmartCompact](https://github.com/coffeecoproject/SmartCompact)
+подключён через pi `DefaultResourceLoader` и механизм расширений. UI получает
+настоящие события pi/расширения, а не симуляцию сокращения контекста. Штатный allow
+line — 200k токенов; короткая сессия может не потребовать compaction. Планы, состояние
+и результаты хранятся на диске независимо от контекста модели.
+
+## Рабочий сценарий настоящего режима Pi
+
+1. Добавьте текстовый PDF или HTTPS arXiv URL, задачу, при необходимости авторский
+   HTTPS-репозиторий и папку данных. Выберите Local/Vast/Auto, время, бюджет, cleanup.
+2. Создайте план. Pi получает извлечённый источник с номерами страниц. Цитаты должны
+   существовать на указанных страницах; выдуманные ссылки отвергаются.
+3. Исправьте JSON ExperimentSpec. Каждое сохранение создаёт новую версию; перед
+   исполнением научные условия замораживаются. `missing` нужно разрешить явно.
+4. Запустите подготовку. Pi создаёт проект сам. Если указана авторская реализация,
+   она реально клонируется, записываются URL/commit; независимая реализация помечается.
+5. Harness исполняет проект, пишет логи и PID. Техническая ошибка допускает максимум
+   две починки кода через pi, но не изменение научных условий без новой версии плана.
+6. Результаты: метрики, конфиг, логи, графики, артефакты с SHA-256, независимая проверка
+   демо, ограничения сопоставимости, команда повторного запуска и открытие папки.
+
+«Процесс завершился» **не означает** «результат статьи воспроизведён». Для общего
+эксперимента проверка формата артефактов не доказывает научную эквивалентность.
+
+## Научный демо-кейс
+
+[`demos/bernoulli-hoeffding`](demos/bernoulli-hoeffding/README.md): независимая
+симуляция односторонней границы Хёффдинга для Bernoulli(p). Открытый текстовый
+источник — [Introduction to Concentration Inequalities, arXiv:1910.02884v1](https://arxiv.org/abs/1910.02884v1),
+страницы 8–9. Исходники и детерминированный генератор данных включены.
 
 ```sh
-./node_modules/.bin/pi install npm:smartcompact
+sh demos/bernoulli-hoeffding/source/fetch-source.sh
+# либо используйте кнопку «Заполнить демо Хёффдинга» для запуска с заглушками
+npm run smoke
 ```
 
-SmartCompact compacts only after a finished piece of work when the context
-passes its allow line (200k tokens by default), so a short demo session may
-show the extension loaded but perform no compaction. That is expected, not a
-failure. Compaction reports come from pi's `/smartcompact`/extension events.
-Actual loading is **not yet verified** in this delivery.
+Для `n=160, p=0.5, epsilon=0.08, R=10000`: измеренная доля `0.0234`, точная
+биномиальная вероятность `0.023883498014142024`, верхняя граница
+`0.1289926310365194`. Верификатор пересчитывает долю из counts CSV, не читает ответ
+обратно из metrics.json. Это проверка теоремы, не опубликованного численного
+результата: `implementation=independent`, `publishedValue=null`, `comparable=false`.
 
-## Demo case
+## Проверка Vast с реальным аккаунтом
 
-`demos/bernoulli-hoeffding/` contains a small independent check of Hoeffding's
-one-sided inequality for Bernoulli variables. It is deliberately a theorem
-check, not a reproduction of a published number.
+Этот сценарий **не выполнялся** в разработке. Нужны собственный аккаунт, баланс,
+ключ Vast, TYPESAFE_API_KEY, SSH-ключ и явно разрешённый бюджет.
 
-- Source used by the app: arXiv:1910.02884v1, *Introduction to Concentration
-  Inequalities*, section 3.5, PDF pages 8-9. The original 1963 JASA article is
-  cited but is a scan without a usable text layer.
-- User task: [`demos/bernoulli-hoeffding/task.md`](demos/bernoulli-hoeffding/task.md).
-- Frozen plan: [`demos/bernoulli-hoeffding/spec.json`](demos/bernoulli-hoeffding/spec.json).
-- Worker contract: [`demos/bernoulli-hoeffding/CONTRACT.md`](demos/bernoulli-hoeffding/CONTRACT.md).
-- Scientific notes and provenance: [`demos/bernoulli-hoeffding/README.md`](demos/bernoulli-hoeffding/README.md).
-- Reference Python baseline: `demos/bernoulli-hoeffding/reference/` (stdlib only).
+1. Настройте авторизацию и SSH, запустите приложение. Проверьте реальные статусы.
+2. Выберите Vast/Auto, положительные hourly/total caps, короткий лимит, например
+   300 секунд, cleanup=`destroy`. Создайте и сохраните научный план.
+3. На approval проверьте offer ID, ресурсы, all-in тариф, резерв итога и время.
+   До подтверждения в Vast Console не должно появиться нового инстанса.
+4. Подтвердите. ID должен сразу попасть в run.json; наблюдайте boot, SSH, upload,
+   подготовку окружения и реальный процесс. Ключи LLM на инстансе отсутствуют.
+5. После завершения проверьте локальный export/manifest.json, SHA-256 архива и файлов,
+   метрики/график/логи. В Console убедитесь, что инстанс действительно удалён.
+6. Повторите отмену во время boot и во время вычисления. Проверьте остановку процесса
+   и cleanup. Удалённый watchdog использует оставшееся время, включая подготовку.
+7. Проверьте ошибку экспорта: SSH/SCP/checksum failure оставляет инстанс, показывает
+   `cleanupRequired` и предупреждение о тарификации. Повторный cleanup сначала
+   выгружает файлы. Отсутствующие метрики после отмены — научная ошибка, не ошибка
+   передачи: проверенный snapshot частичных результатов/логов допускает cleanup.
+8. При потерянном ответе create найдите инстанс по сохранённой уникальной метке.
+   Неопределённость блокирует вторую аренду, а startup/cleanup повторяют reconciliation.
+   Пустой/неуспешный ответ списка не выдаётся за доказательство отсутствия аренды;
+   может потребоваться ручная сверка с Vast Console/поддержкой.
+9. При cleanup=`retain` аренда остаётся платной по выбору пользователя. Завершите
+   её в Console. Сохраните реальные offer/instance IDs, цену и результат проверки.
 
-To run it in the app:
+## Архитектура и границы безопасности
 
-1. Create an experiment, choose Local mode.
-2. Use the arXiv URL `https://arxiv.org/abs/1910.02884` or an absolute path to a
-   PDF downloaded with `demos/bernoulli-hoeffding/source/fetch-source.sh`.
-3. Paste the task text (or dictate the Russian phrase above).
-4. Review the plan: `p=0.5`, `epsilon=0.08`, `n` in {10,20,40,80,160}, 10,000
-   trials per `n`, seed `20261025`, primary metric
-   `empirical_tail_probability` at `n=160`. Do not mark it comparable to a
-   published value.
-5. Run. OpenCode must create the project files inside `project/`; validate that
-   `samples.csv` has the documented header and that the independent verifier
-   recomputes the metric.
+- `src/main`: Electron main/preload; contextIsolation, sandbox, nodeIntegration=false,
+  локальный secure protocol/CSP, проверка IPC sender, узкий типизированный API.
+- `src/renderer`: React; нет Node API, ключей, прямого SSH или процессов.
+- `src/core`: отдельный Electron utility process; атомарные JSON, JSONL, версии планов,
+  импорт источника, статусы, валидация и отчёты.
+- `src/integrations`: pi + настоящее расширение SmartCompact, Jev, whisper.cpp.
+- `src/compute`: общий prepare/run/getStatus/streamLogs/cancel/collectArtifacts/cleanup,
+  LocalBackend и VastBackend. На Vast передаются проект/данные, не агенты/ключи.
 
-The numbers above are the demo defaults. If you revise the plan, the coding
-worker must copy the revised `plan.parameters` into `config.json`; the
-independent verifier validates those values against the frozen plan rather than
-against the defaults (with the domain limits documented in `CONTRACT.md`).
+**Локальный код и shell-инструменты pi — не OS-песочница.** Они действуют с правами
+пользователя. Запускайте только понятные задачи/источники, проверяйте код; не используйте
+приложение для обработки враждебного кода на машине с ценными данными. Изоляция
+renderer не означает изоляцию научного Python. Bash окружение фильтруется, но это
+не защита от намеренного чтения доступных пользователю файлов.
 
-The heuristic the demo checks is
+Фиксированные границы первой версии: текстовые PDF до 40 MiB, без OCR; один активный
+запуск/инстанс; Python; один cloud image; локальный CUDA GPU определяется через
+`nvidia-smi` (Apple Metal не объявляется CUDA-вариантом); голос только для задачи.
+Импорт/экспорт ограничены размерами и безопасными относительными путями; причины
+отказа показываются явно.
 
-$$
-\Pr(\bar X_n - p \ge \varepsilon) \le e^{-2n\varepsilon^2}.
-$$
+Оценка Vast — не гарантия счёта провайдера: при потере сети процесс можно ограничить
+watchdog, но недоступный API не гарантирует остановку тарификации. Сохранение данных
+при ошибке экспорта важнее молчаливого удаления инстанса; риск расходов виден в UI.
+После аварийного перезапуска неизвестный локальный PID не убивается вслепую.
 
-The analytic exact binomial tail at `n=160` is about `0.0238835` and the
-Hoeffding bound is about `0.1289926`; these are computed from the declared
-parameters, not from a run. A measured empirical value must be taken from the
-actual run and must never be replaced by a fixture. An empirical fraction above
-the bound is not by itself a violation of the theorem: it is a finite Monte
-Carlo estimate with reported standard error.
+## Зависимости и лицензия
 
-The reference baseline can be run without the app:
+Версии закреплены `package-lock.json`: pi 1.4.0, SmartCompact 0.1.8, Jev SDK 0.7.0,
+Electron 45.0.0, React 19.2.0, TypeScript 5.9.3, PDF.js 5.4.624. Zod 4.6.7 и override
+Undici 8.12.3 закрывают найденные runtime advisories без отката pi на старую ветку.
+Наш код — [MIT](LICENSE); статьи, модели и зависимости сохраняют собственные лицензии.
+PDF не включён в репозиторий: fetch-скрипт скачивает источник и проверяет SHA-256.
 
-```sh
-cd demos/bernoulli-hoeffding/reference
-python3 main.py --config config.json
-```
-
-It is a transparent baseline and smoke fixture. It is **not** injected as an
-OpenCode output; the product flow requires the worker to create files in the
-normal `project/` path.
-
-## Vast real-account verification procedure
-
-Do this only with an account you control, a funded balance, and an explicit
-budget. No paid instance is created during development or tests.
-
-1. Fund a small Vast balance. Generate an API key; put it in `VAST_API_KEY` or
-   `~/.config/vastai/vast_api_key` (`chmod 600`).
-2. Add your public SSH key to the Vast account. Confirm
-   `ssh -i ~/.ssh/paper2_vast -p <port> root@<host> true` works on a manually
-   created instance before blaming the harness.
-3. Start the app, open Settings, set `sshKeyPath`, and confirm Vast and SSH show
-   a ready/needs-setup reason honestly.
-4. Set Local/Vast/Auto, a **positive** hourly budget, a **positive** total
-   budget, a short time limit (for example 300 s), and cleanup policy
-   `destroy` (default). Auto with no suitable real offer must show "no suitable
-   option", not fake a machine.
-5. Create the Bernoulli demo or another small project. On Vast/Auto, review the
-   approval panel: instance/offer, GPU, hourly rate, total cap, deadline,
-   cleanup policy. Note the offer ID. Only then approve.
-6. Watch the real events: instance ID persisted immediately, boot/runtime
-   deadline, SSH key allowlist, upload excluding `.venv`/secrets/env, remote
-   `python -m venv` + requirements, `main.py --config config.json`, logs,
-   collection of artifacts, validation, then destroy. Confirm in the Vast
-   console that the instance is gone.
-7. **Export guard:** if artifact collection or validation fails, the app must
-   keep the instance and mark `cleanupRequired`, showing that billing may
-   continue. Do not treat exit code 0 as export success. The cleanup action
-   retries collection *before* destruction. If the policy is `retain`, the
-   instance remains billable by design; destroy it manually.
-8. **Cancellation:** cancel during boot and during execution. Agent work and the
-   remote process must stop; collection is still attempted for completed
-   outputs; cleanup follows policy. A cancellation that cannot safely collect
-   or clean up must leave a visible warning, not a silent success.
-9. Record the observed offer ID, instance ID, rate, elapsed time, artifacts, and
-   cleanup result here or in the release notes. Until that is done, the Vast
-   path remains **not exercised**.
-
-Reference docs: [Vast quickstart](https://docs.vast.ai/sdk/python/quickstart),
-[Vast SSH keys](https://docs.vast.ai/guides/instances/connect/ssh).
-
-## Architecture
-
-```
-src/main/                 Electron main, preload, protocol, narrow IPC
-src/renderer/             React UI; no Node, no keys
-src/shared/types.ts       immutable contracts: Spec, Run, Artifact, AppAPI...
-src/core/source.ts        PDF/arXiv download, text extraction, sourceRefs check
-src/core/store.ts         atomic run JSON, JSONL events, settings
-src/core/harness.ts       orchestration/status/approval/cancel/recovery
-src/core/artifacts.ts     manifest/traversal/symlink checks, hashing, independent verification
-src/compute/              LocalBackend and VastBackend (ComputeBackend)
-src/integrations/         pi, OpenCode, Jev, Whisper, SmartCompact
-demos/                    documented scientific cases and reference baselines
-tests/                    behavioral edge cases
-scripts/smoke.ts          real local execution probes
-```
-
-Key properties:
-
-- `ExperimentSpec` is frozen before execution. Changing scientific conditions
-  requires a new plan version. Repairs may change code, not science.
-- One active operation and one compute instance. Long work runs in a separate
-  process; the Electron UI never blocks.
-- Local execution is a separate process group, but **not a security sandbox**:
-  generated Python runs with your user's permissions. Only run projects you
-  trust; the app warns before executing generated code.
-- Artifact collection rejects absolute/traversal paths and symlinks, requires
-  manifest-declared outputs plus `metrics.json`, requires all metric values to be
-  finite numbers, hashes every artifact, and requires the declared metric name.
-- For the demo, the primary metric is recomputed from `samples.csv`; the
-  verifier does not read it back from `metrics.json`. The verification string
-  states Monte Carlo and comparability limits explicitly.
-- Agent children get an allowlisted environment. Vast/Jev/pi credentials are
-  stripped before coding/experiment children; provider auth stays in the
-  respective tool's own store and never enters the renderer or experiment
-  directory.
-- After a crash, runs in a busy status become `interrupted`. A saved Vast
-  instance remains billable until collected/cleaned. A saved local PID is not
-  automatically killed after restart because it may be reused; the UI reports
-  it instead of guessing.
-- SmartCompact runs as a real pi extension. A short session may not compact.
-
-## Reproducibility and scientific honesty
-
-- A finished process is not a reproduced paper. The UI reports both.
-- The demo is a theorem check with an explicit independent implementation,
-  `publishedValue: null`, and `comparable: false`.
-- The verifier checks schema, bounds, recomputed primary metric, and structural
-  determinism preconditions. One artifact set cannot prove that an arbitrary
-  PRNG was deterministic; re-running and comparing hashes is stronger.
-- For generic experiments, artifact validation confirms required outputs and
-  numeric format, not correctness of every metric or equivalence to the paper's
-  data, split, and preprocessing.
-- External services are reported as configured only when their actual
-  auth/health check succeeds. They are not reported as executed unless a real
-  run occurred.
-
-## Known limitations
-
-- Text PDFs only; no OCR. Scanned originals (including the 1963 Hoeffding
-  article) cannot be imported as-is.
-- One supported cloud image, one Vast instance, one coding worker, one user.
-- The demo uses known `p`; it does not test unknown-mean or general bounded
-  variables.
-- Local execution is not sandboxed (see above).
-- Vast cost estimates depend on live offers and provider pricing; the harness
-  reserves for storage/network where documented but cannot guarantee the final
-  invoice. Budgets are hard filters, not billing guarantees.
-- `npm audit` findings in transitive dependencies must be evaluated by the
-  maintainer; do not downgrade the pinned pi/OpenCode/Electron stack blindly.
-- Vast/Jev/pi/OpenCode/Whisper/SmartCompact behavior is only claimed after an
-  actual configured run. See the status table.
-
-## Dependencies and licenses
-
-Runtime pins (see `package.json`/`package-lock.json`): Electron 45.0.0, React
-19.2.0, TypeScript 5.9.3, `@earendil-works/pi-coding-agent` 1.4.0,
-`@opencode-ai/sdk` 1.19.4 and `opencode-ai` 1.19.4, `@typesafe-ai/sdk` 0.7.0,
-`smartcompact` 0.1.8, `pdfjs-dist` 5.4.624, `zod` (patched version per the lock),
-Node >= 22.19.0.
-
-Our code is MIT licensed; see [`LICENSE`](LICENSE). Paper PDFs, arXiv content,
-Whisper models, and third-party services retain their own licenses and terms.
-The demo's arXiv PDF is fetched on demand and is not redistributed here.
+Документация: [pi SDK](https://pi.dev/docs/latest/sdk),
+[Jev](https://docs.typesafe.ai/introduction/quickstart),
+[Vast](https://docs.vast.ai/sdk/python/quickstart),
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+[Electron security](https://www.electronjs.org/docs/latest/tutorial/security).

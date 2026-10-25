@@ -1,8 +1,8 @@
-# Worker output contract: `demo = "bernoulli-hoeffding"`
+# Code output contract: `demo = "bernoulli-hoeffding"`
 
-The coding worker must create a runnable project directly in the run's
-`project/` directory. The reference project in `reference/` is a baseline for
-smoke tests only; copying it is not evidence of an OpenCode run. The verifier
+Pi must create a runnable project directly in the run's `project/` directory.
+The reference project in `reference/` is a baseline for smoke tests only;
+copying it is not evidence of model-driven implementation. The verifier
 requires the files below and independently recomputes the primary result.
 
 ## Project layout

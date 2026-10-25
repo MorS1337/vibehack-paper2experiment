@@ -33,7 +33,7 @@ function context(root = '/unused'): ComputeContext {
   const run: ExperimentRun = {
     id: '00000000-0000-4000-8000-123456789abc', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     title: spec.title, status: 'running', dir: root, spec, planVersion: 1, attempts: 0, artifacts: [],
-    input: { source: 'inline', task: 'test', mode: 'vast', timeSeconds: 60, maxHourlyUSD: 2, maxTotalUSD: 5, cleanup: 'destroy' },
+    input: { agentMode: 'pi', source: 'inline', task: 'test', mode: 'vast', timeSeconds: 60, maxHourlyUSD: 2, maxTotalUSD: 5, cleanup: 'destroy' },
     target: evaluateVastOffer(offer, spec)!.target, deadlineAt: new Date(Date.now() + 120_000).toISOString()
   };
   return {

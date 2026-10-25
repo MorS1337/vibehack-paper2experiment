@@ -161,7 +161,7 @@ async function vastStatus(settings: AppSettings): Promise<ConnectionStatus> {
   }
 }
 
-/** Returns exactly the two compute providers; pi/opencode/whisper statuses belong to other integrations. */
+/** Returns the two compute providers; agent and voice statuses belong to their integrations. */
 export async function getComputeStatuses(settings: AppSettings): Promise<ConnectionStatus[]> {
   return Promise.all([checkJevStatus(), vastStatus(settings)]);
 }

@@ -68,7 +68,7 @@ function runFor(root: string): ExperimentRun {
     updatedAt: new Date(0).toISOString(),
     title: 'fixture',
     status: 'collecting',
-    input: { source: 'https://arxiv.org/abs/1910.02884', task: 'fixture', mode: 'local', timeSeconds: 30, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy' },
+    input: { agentMode: 'pi', source: 'https://arxiv.org/abs/1910.02884', task: 'fixture', mode: 'local', timeSeconds: 30, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy' },
     dir: root,
     planVersion: 1,
     attempts: 0,

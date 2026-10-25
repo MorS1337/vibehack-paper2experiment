@@ -1,8 +1,15 @@
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import './pdf-platform.js';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { ExperimentRun, SourceDocument, ExperimentSpec } from '../shared/types.js';
+
+// Electron utility processes have no browser Worker and PDF.js does not auto-select its Node worker.
+// Point its real worker loader at the installed module; parsing remains in the isolated harness process.
+GlobalWorkerOptions.workerSrc = pathToFileURL(createRequire(import.meta.url).resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')).href;
 
 const MAX_PDF = 40 * 1024 * 1024;
 export function arxivPDF(source: string): URL {

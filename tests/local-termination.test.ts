@@ -75,7 +75,7 @@ async function fixture() {
   const run: ExperimentRun = {
     id: '00000000-0000-4000-8000-000000000002', createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(), title: spec.title, status: 'running',
-    input: { source: 'inline', task: spec.title, mode: 'local', timeSeconds: 60, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy' },
+    input: { agentMode: 'pi', source: 'inline', task: spec.title, mode: 'local', timeSeconds: 60, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy' },
     dir: root, spec, planVersion: 1, attempts: 0, artifacts: [],
     deadlineAt: new Date(Date.now() + 60_000).toISOString()
   };

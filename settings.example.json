@@ -1,7 +1,6 @@
 {
   "piProvider": "anthropic",
   "piModel": "claude-sonnet-4-5",
-  "openCodeModel": "openrouter/anthropic/claude-sonnet-4",
   "python": "python3",
   "whisperBinary": "/opt/homebrew/bin/whisper-cli",
   "whisperModel": "/Users/you/models/ggml-large-v3-turbo.bin",

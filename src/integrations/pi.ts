@@ -4,10 +4,13 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { Type, type Static } from 'typebox';
 import type { Model } from '@earendil-works/pi-ai';
 import {
   createAgentSession,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+  createEditToolDefinition,
+  createBashToolDefinition,
   DefaultResourceLoader,
   getAgentDir,
   ModelRuntime,
@@ -15,20 +18,18 @@ import {
   SettingsManager,
   VERSION as PI_VERSION,
   type AgentSession,
-  type AgentToolResult,
   type ToolDefinition
 } from '@earendil-works/pi-coding-agent';
 import { SetupRequiredError } from '../shared/errors.js';
 import { SpecSchema } from '../shared/types.js';
 import type { AppSettings, ComputeContext, ConnectionStatus, ExperimentRun, ExperimentSpec } from '../shared/types.js';
-import { openCodeStatus, redactSecrets, runOpenCodeWorker } from './opencode.js';
+import { executionEnv } from '../compute/process.js';
 
 const PLAN_TIMEOUT_MS = 180_000;
 const REPORT_TIMEOUT_MS = 180_000;
 const CODE_TIMEOUT_MS = 600_000;
 const STATUS_TIMEOUT_MS = 15_000;
 const MAX_SOURCE_CHARS = 220_000;
-const MAX_WORKER_INSTRUCTIONS = 12_000;
 const moduleRequire = createRequire(path.join(process.cwd(), 'package.json'));
 
 export interface PiAgentContext {
@@ -41,7 +42,6 @@ export interface PiAgentContext {
 export interface PiCodeAgentContext extends PiAgentContext {
   projectDir: string;
   repair?: string;
-  persist?: (patch: Partial<ExperimentRun>) => Promise<void>;
 }
 
 interface Deadline {
@@ -71,7 +71,11 @@ function createDeadline(parent: AbortSignal, timeoutMs: number, label: string): 
 }
 
 function errorMessage(error: unknown): string {
-  return redactSecrets(error instanceof Error ? error.message : String(error));
+  let message = error instanceof Error ? error.message : String(error);
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value && value.length >= 8 && /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name)) message = message.split(value).join('[redacted]');
+  }
+  return message;
 }
 
 function asAgentError(error: unknown): Error {
@@ -81,7 +85,7 @@ function asAgentError(error: unknown): Error {
 
 async function emitSafe(context: PiAgentContext, type: 'agent' | 'log' | 'error' | 'compaction' | 'artifact', message: string): Promise<void> {
   try {
-    await context.emit(type, redactSecrets(message).slice(0, 2_000));
+    await context.emit(type, errorMessage(message).slice(0, 2_000));
   } catch {
     // A vanished run must not mask the original agent failure.
   }
@@ -149,7 +153,7 @@ async function smartCompactStatus(): Promise<ConnectionStatus> {
   try {
     const probe = await probeSmartCompact();
     if (probe.errors.length) {
-      return { component: 'smartcompact', state: 'error', detail: `Ошибки загрузки: ${probe.errors.slice(0, 3).map(entry => `${path.basename(entry.path)}: ${redactSecrets(entry.error)}`).join('; ')}` };
+      return { component: 'smartcompact', state: 'error', detail: `Ошибки загрузки: ${probe.errors.slice(0, 3).map(entry => `${path.basename(entry.path)}: ${errorMessage(entry.error)}`).join('; ')}` };
     }
     if (!probe.loaded) return { component: 'smartcompact', state: 'error', detail: `SmartCompact ${probe.version} не зарегистрировал ни одного расширения (${probe.extensionPath}).` };
     const warnings = probe.warnings.length ? `; предупреждений: ${probe.warnings.length}` : '';
@@ -184,7 +188,7 @@ async function selectPiModel(settings: AppSettings, signal: AbortSignal): Promis
   const selected = provider ? runtime.getModel(provider, modelId) : available[0];
   if (!selected) {
     const configured = runtime.getProviders().filter(entry => runtime.getProviderAuthStatus(entry.id).configured).map(entry => entry.id);
-    if (!configured.length) throw new SetupRequiredError('pi: не найдено ни одного провайдера с учётными данными. Выполните pi, затем /login (OAuth или API-ключ), или задайте переменную окружения провайдера. Учётные данные OpenCode настраиваются отдельно.');
+    if (!configured.length) throw new SetupRequiredError('pi: не найдено ни одного провайдера с учётными данными. Выполните pi, затем /login (OAuth или API-ключ), или задайте переменную окружения провайдера.');
     throw new SetupRequiredError(`pi: нет доступной модели. Настроены провайдеры: ${configured.join(', ')}. Выберите провайдера и модель в настройках.`);
   }
   const auth = runtime.getProviderAuthStatus(selected.provider);
@@ -206,14 +210,12 @@ async function piStatus(settings: AppSettings): Promise<ConnectionStatus> {
   }
 }
 
-/** Snapshot-safe health check. It never launches an OpenCode server or a model call. */
+/** Snapshot-safe health check; it does not perform model inference. */
 export async function getAgentStatuses(settings: AppSettings): Promise<ConnectionStatus[]> {
-  const [pi, opencode, smartcompact] = await Promise.all([
+  return Promise.all([
     piStatus(settings).catch(error => ({ component: 'pi' as const, state: 'error' as const, detail: errorMessage(error) })),
-    openCodeStatus(settings).catch(error => ({ component: 'opencode' as const, state: 'error' as const, detail: errorMessage(error) })),
     smartCompactStatus()
   ]);
-  return [pi, opencode, smartcompact];
 }
 
 async function createPiSession(context: PiAgentContext, options: {
@@ -253,6 +255,8 @@ async function createPiSession(context: PiAgentContext, options: {
     settingsManager: SettingsManager.inMemory({})
   });
   const unsubscribe = session.subscribe(event => {
+    if (event.type === 'tool_execution_start') void emitSafe(context, 'agent', `pi выполняет инструмент ${event.toolName}`);
+    if (event.type === 'tool_execution_end') void emitSafe(context, event.isError ? 'error' : 'agent', `pi: ${event.toolName} ${event.isError ? 'завершился ошибкой' : 'завершён'}`);
     if (event.type === 'compaction_start') void emitSafe(context, 'compaction', `pi начал компакцию (${event.reason}); SmartCompact не форсирует её.`);
     if (event.type === 'compaction_end') {
       const freed = event.result ? ` до ~${event.result.estimatedTokensAfter ?? '?'} токенов (было ${event.result.tokensBefore})` : '';
@@ -559,7 +563,7 @@ async function projectIssues(projectDir: string, context: PiCodeAgentContext): P
   return issues;
 }
 
-const DEMO_WORKER_CONTRACT = [
+const DEMO_CODE_CONTRACT = [
   'Замороженный контракт демо Бернулли–Хёффдинга:',
   '- experiment.json: entryPoint "main.py", config "config.json", requirements "requirements.txt", artifacts ровно ["metrics.json","samples.csv","plot.svg"]; все пути относительны project/, артефакты — относительно project/artifacts/.',
   '- config.json: научные ключи верхнего уровня должны точно совпадать с plan.parameters (p, epsilon, n_values, trials_per_n, seed, primary_n, tail_side); дополнительные служебные ключи допустимы, но не противоречат плану.',
@@ -570,7 +574,7 @@ const DEMO_WORKER_CONTRACT = [
   '- Не копируй reference/ из demos: эталоны служат только для smoke-теста; файлы проекта должен создать ты сам. publishedValue не воспроизводится, comparable=false.'
 ].join('\n');
 
-function workerPrompt(context: PiCodeAgentContext, instructions: string): string {
+function buildCodePrompt(context: PiCodeAgentContext): string {
   const spec = context.run.spec;
   if (!spec) throw new Error('План эксперимента отсутствует: кодирование невозможно.');
   const manifest = { entryPoint: 'main.py', config: 'config.json', requirements: 'requirements.txt', artifacts: ['metrics.json', '<другие относительные артефакты>'] };
@@ -586,7 +590,7 @@ function workerPrompt(context: PiCodeAgentContext, instructions: string): string
     '- Все обязательные пути — простые относительные, без абсолютных путей и ".."; stdout.log/stderr.log пишутся в корень project вычислителем.',
     '- requirements.txt содержит реальные зависимости; config.json — валидный JSON.',
     '',
-    ...(spec.demo === 'bernoulli-hoeffding' ? [DEMO_WORKER_CONTRACT, ''] : []),
+    ...(spec.demo === 'bernoulli-hoeffding' ? [DEMO_CODE_CONTRACT, ''] : []),
     'НАУЧНЫЙ ПЛАН (не изменять plan.json):',
     JSON.stringify(spec, null, 2),
     '',
@@ -595,136 +599,48 @@ function workerPrompt(context: PiCodeAgentContext, instructions: string): string
       : 'Авторский репозиторий не используется: реализуй метод независимо по плану.',
     context.repair ? `\nТЕХНИЧЕСКАЯ ПОЧИНКА (stderr эксперимента):\n${context.repair.slice(-18_000)}` : '',
     '',
-    'ИНСТРУКЦИИ ОРКЕСТРАТОРА pi:',
-    instructions.slice(0, MAX_WORKER_INSTRUCTIONS)
+    'Используй свои инструменты read/write/edit/bash и действительно создай файлы. Допустима только проверка синтаксиса. Не запускай эксперимент: исполнение, установка зависимостей, аренда и лимиты принадлежат harness.'
   ].join('\n');
 }
 
-function buildCodePrompt(context: PiCodeAgentContext): string {
-  const spec = context.run.spec;
-  if (!spec) throw new Error('План эксперимента отсутствует.');
-  return [
-    'Реализуй эксперимент через единственный доступный инструмент delegate_coding. Не пытайся писать код сам: у тебя нет файловых и shell-инструментов.',
-    'Сформулируй для delegate_coding точные инструкции: какие файлы создать, как проверить импорт/запуск и как обеспечить контракт experiment.json. Инструмент сам запустит OpenCode и вернёт фактический результат.',
-    `Каталог проекта: ${context.projectDir}. Замороженный план лежит в plan.json и не подлежит изменению.`,
-    context.repair ? `Это техническая починка. Исправь причину stderr, не меняя научный план:\n${context.repair.slice(-18_000)}` : 'Это первая реализация проекта.',
-    'После delegate_coding не утверждай успех, если инструмент вернул ошибку. При ошибке вызови delegate_coding ещё раз с исправленными инструкциями.',
-    '',
-    'ПЛАН:',
-    JSON.stringify(spec, null, 2)
-  ].join('\n');
-}
 
 function buildCodeCorrection(issues: string[]): string {
   return [
-    'Проверка проекта после delegate_coding не прошла. Вызови delegate_coding ещё раз и реально исправь файлы. Не меняй plan.json.',
+    'Проверка проекта не прошла. Используй свои файловые инструменты и исправь реальные файлы. Не меняй plan.json и научные параметры.',
     `Ошибки: ${issues.join('; ')}`,
     'Обязательный контракт: experiment.json, main.py, config.json, requirements.txt и artifacts/metrics.json с числовым объектом; artifacts — относительно project/artifacts.'
   ].join('\n');
 }
 
-interface DelegateState {
-  calls: number;
-  successes: number;
-  sessionId?: string;
-  lastError?: string;
-  setupError?: string;
-}
-
-const DELEGATE_PARAMETERS = Type.Object({
-  instructions: Type.String({ description: 'Concrete coding instructions for the OpenCode worker: files, behavior, verification steps.' }),
-  notes: Type.Optional(Type.String({ description: 'Optional short context from the orchestrator.' }))
-});
-
-function createDelegateTool(context: PiCodeAgentContext, deadline: Deadline, state: DelegateState): ToolDefinition<typeof DELEGATE_PARAMETERS> {
-  return {
-    name: 'delegate_coding',
-    label: 'Delegate coding to OpenCode',
-    description: 'Starts the real OpenCode worker in the project directory, waits for it to finish, and reports the actual files and session. Use this for every code change.',
-    parameters: DELEGATE_PARAMETERS,
-    executionMode: 'sequential',
-    execute: async (_toolCallId, params: Static<typeof DELEGATE_PARAMETERS>, toolSignal): Promise<AgentToolResult> => {
-      state.calls += 1;
-      const signals = [deadline.signal];
-      if (toolSignal) signals.push(toolSignal);
-      const signal = AbortSignal.any(signals);
-      try {
-        const instructions = `${params.instructions}${params.notes ? `\n\nДополнительный контекст:\n${params.notes}` : ''}`;
-        await emitSafe(context, 'agent', 'OpenCode worker запускается для delegate_coding.');
-        const result = await runOpenCodeWorker({
-          projectDir: context.projectDir,
-          settings: context.settings,
-          signal,
-          prompt: workerPrompt(context, instructions),
-          sessionId: state.sessionId ?? (context.repair ? context.run.workerSessionId : undefined),
-          onSession: async sessionId => {
-            state.sessionId = sessionId;
-            context.run.workerSessionId = sessionId;
-            await context.persist?.({ workerSessionId: sessionId });
-          }
-        });
-        state.sessionId = result.sessionId;
-        state.successes += 1;
-        state.lastError = undefined;
-        state.setupError = undefined;
-        await emitSafe(context, 'agent', `OpenCode завершил delegate_coding (сессия ${result.sessionId}; ошибок инструментов: ${result.toolErrors.length}).`);
-        const summary = result.text ? result.text.slice(0, 6_000) : '(OpenCode не вернул текст, но сессия завершилась без ошибки)';
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `OpenCode выполнен. Сессия: ${result.sessionId}. Файлы проверяются отдельно.\n${summary}${result.toolErrors.length ? `\nОшибки инструментов: ${result.toolErrors.slice(0, 5).join('; ')}` : ''}`
-          }],
-          details: { sessionId: result.sessionId, toolErrors: result.toolErrors }
-        };
-      } catch (error) {
-        state.lastError = errorMessage(error);
-        if (error instanceof SetupRequiredError) state.setupError = state.lastError;
-        await emitSafe(context, 'error', `delegate_coding: ${state.lastError}`);
-        return {
-          content: [{ type: 'text' as const, text: `OpenCode worker не завершил работу: ${state.lastError}` }],
-          details: { error: state.lastError },
-          isError: true
-        };
-      }
-    }
-  };
-}
 
 export async function codeWithPi(context: PiCodeAgentContext): Promise<void> {
   const deadline = createDeadline(context.signal, CODE_TIMEOUT_MS, 'Написание кода pi');
   await mkdir(context.projectDir, { recursive: true });
-  const state: DelegateState = { calls: 0, successes: 0, sessionId: context.repair ? context.run.workerSessionId : undefined };
+  const tools = [
+    createReadToolDefinition(context.projectDir),
+    createWriteToolDefinition(context.projectDir),
+    createEditToolDefinition(context.projectDir),
+    createBashToolDefinition(context.projectDir, { exposeSessionEnvironment: false, spawnHook: spawn => ({ ...spawn, cwd: context.projectDir, env: executionEnv() }) })
+  ];
   try {
     const opened = await createPiSession(context, {
       cwd: context.projectDir,
-      systemPrompt: 'Ты оркестратор инженерного агента. У тебя единственный инструмент delegate_coding; он запускает настоящий OpenCode worker в каталоге проекта. Не утверждай, что работа сделана, пока инструмент не вернул успешный фактический результат. Не меняй plan.json.',
-      tools: ['delegate_coding'],
-      customTools: [createDelegateTool(context, deadline, state)],
+      systemPrompt: 'Ты исследовательский coding-агент pi. Сам создавай и исправляй файлы в рабочем каталоге через read/write/edit/bash. Не обращайся к секретам, не арендуй ресурсы, не запускай эксперимент и не меняй plan.json. Научный план и лимиты контролирует harness.',
+      tools: tools.map(tool => tool.name),
+      customTools: tools,
       signal: deadline.signal
     });
     try {
-      const before = state.successes;
+      await emitSafe(context, 'agent', 'Pi готовит код собственными файловыми и shell-инструментами.');
       await promptPi(opened.session, buildCodePrompt(context), deadline, 'Написание кода pi', true);
-      if (state.successes === before) {
-        if (state.setupError) throw new SetupRequiredError(state.setupError);
-        throw new Error(state.lastError
-          ? `pi не получил успешного выполнения delegate_coding: ${state.lastError}`
-          : 'pi не вызвал delegate_coding; реализация не выполнена.');
-      }
       let issues = await projectIssues(context.projectDir, context);
       if (issues.length) {
         await emitSafe(context, 'error', `Проверка проекта: ${issues.slice(0, 5).join('; ')}`);
-        const beforeRepair = state.successes;
         await promptPi(opened.session, buildCodeCorrection(issues), deadline, 'Починка проекта pi', true);
-        if (state.successes === beforeRepair) {
-          if (state.setupError) throw new SetupRequiredError(state.setupError);
-          throw new Error('pi не вызвал delegate_coding для исправления контракта проекта.');
-        }
         issues = await projectIssues(context.projectDir, context);
       }
       if (issues.length) throw new Error(`Контракт проекта не выполнен: ${issues.slice(0, 8).join('; ')}`);
-      if (!state.sessionId) throw new Error('OpenCode worker не вернул идентификатор сессии.');
-      await emitSafe(context, 'agent', `Проект проверен: experiment.json, точка входа, конфиг, requirements и artifacts/metrics.json на месте. OpenCode сессия ${state.sessionId}.`);
+      await emitSafe(context, 'agent', 'Файлы проекта pi проверены: manifest, точка входа, замороженный конфиг, зависимости и план.');
     } finally {
       opened.close();
     }

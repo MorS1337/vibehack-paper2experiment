@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Store } from '../src/core/store.js';
 
-const input = { source: 'https://arxiv.org/abs/1706.03762', task: 'Persistence probe', mode: 'local' as const, timeSeconds: 10, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy' as const };
+const input = { agentMode: 'pi' as const, source: 'https://arxiv.org/abs/1706.03762', task: 'Persistence probe', mode: 'local' as const, timeSeconds: 10, maxHourlyUSD: 0, maxTotalUSD: 0, cleanup: 'destroy' as const };
 test('concurrent transitions persist newest state and all ordered events across restart', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'p2e-store-'));
   try {

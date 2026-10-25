@@ -14,7 +14,7 @@ export const SpecSchema = z.object({
 });
 export type ExperimentSpec = z.infer<typeof SpecSchema>;
 export type RunStatus = 'draft' | 'importing' | 'planning' | 'needs_setup' | 'needs_data' | 'ready' | 'coding' | 'selecting_compute' | 'awaiting_approval' | 'preparing' | 'running' | 'collecting' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'interrupted';
-export interface ExperimentInput { source: string; task: string; authorRepo?: string; dataDir?: string; mode: 'local' | 'vast' | 'auto'; timeSeconds: number; maxHourlyUSD: number; maxTotalUSD: number; cleanup: 'destroy' | 'retain'; }
+export interface ExperimentInput { agentMode: 'demo' | 'pi'; source: string; task: string; authorRepo?: string; dataDir?: string; mode: 'local' | 'vast' | 'auto'; timeSeconds: number; maxHourlyUSD: number; maxTotalUSD: number; cleanup: 'destroy' | 'retain'; }
 export interface SourceDocument { original: string; textPath: string; pages: { page: number; text: string }[]; sha256: string; }
 export interface ComputeTarget { id: string; kind: 'local' | 'vast'; label: string; cpuCores: number; ramGB: number; gpu: boolean; vramGB: number; diskGB: number; hourlyUSD: number; estimatedUSD: number; offerId?: number; details?: Record<string, unknown>; }
 export interface RunEvent { id: string; runId: string; at: string; type: 'status' | 'log' | 'agent' | 'compaction' | 'compute' | 'artifact' | 'error'; message: string; }

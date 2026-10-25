@@ -69,7 +69,7 @@ function baseRun(root: string, spec: ExperimentSpec): ExperimentRun {
     updatedAt: new Date().toISOString(),
     title: spec.title,
     status: 'running',
-    input: { source: 'inline', task: 'compute test', mode: 'local', timeSeconds: spec.limits.timeSeconds, maxHourlyUSD: spec.limits.maxHourlyUSD, maxTotalUSD: spec.limits.maxTotalUSD, cleanup: 'destroy' },
+    input: { agentMode: 'pi', source: 'inline', task: 'compute test', mode: 'local', timeSeconds: spec.limits.timeSeconds, maxHourlyUSD: spec.limits.maxHourlyUSD, maxTotalUSD: spec.limits.maxTotalUSD, cleanup: 'destroy' },
     dir: root,
     spec,
     planVersion: 1,

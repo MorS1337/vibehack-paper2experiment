@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppSettings, ExperimentInput, ExperimentRun, RunEvent } from '../shared/types.js';
 
-export const defaultSettings: AppSettings = { piProvider: '', piModel: '', openCodeModel: '', python: 'python3', whisperBinary: 'whisper-cli', whisperModel: '', sshKeyPath: '' };
+export const defaultSettings: AppSettings = { piProvider: '', piModel: '', python: 'python3', whisperBinary: 'whisper-cli', whisperModel: '', sshKeyPath: '' };
 export async function atomicJSON(file: string, data: unknown): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -17,7 +17,15 @@ export class Store {
   constructor(readonly root: string) {}
   async load(): Promise<void> {
     await mkdir(path.join(this.root, 'experiments'), { recursive: true });
-    try { this.settings = { ...defaultSettings, ...JSON.parse(await readFile(path.join(this.root, 'settings.json'), 'utf8')) }; }
+    try {
+      const stored: unknown = JSON.parse(await readFile(path.join(this.root, 'settings.json'), 'utf8'));
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error('Настройки должны быть JSON-объектом');
+      for (const key of Object.keys(defaultSettings) as (keyof AppSettings)[]) {
+        const value = (stored as Record<string, unknown>)[key];
+        if (value !== undefined && typeof value !== 'string') throw new Error(`Настройка ${key} должна быть строкой`);
+        this.settings[key] = typeof value === 'string' ? value : defaultSettings[key];
+      }
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Не удалось прочитать настройки: ${String(error)}`); }
     for (const name of await readdir(path.join(this.root, 'experiments'))) {
       if (!/^[a-f0-9-]{36}$/.test(name)) continue;
