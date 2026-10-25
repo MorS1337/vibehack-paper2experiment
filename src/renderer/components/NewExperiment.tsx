@@ -5,6 +5,7 @@ import type {
   ExperimentRun,
 } from "../../shared/types.js";
 import { useVoiceTask } from "../hooks/useVoiceTask.js";
+import { DictationControl, DictationError } from "./DictationControl.js";
 import { errorMessage } from "../lib/api.js";
 
 // A decorative, deterministic field: not a chart and not represented as measured data.
@@ -284,23 +285,13 @@ export function NewExperiment({
               maxLength={16000}
             />
             <div className="composer-tools">
-              <button
-                type="button"
-                disabled={
-                  voice.phase === "requesting" || voice.phase === "transcribing"
-                }
-                onClick={() =>
-                  void (voice.phase === "recording"
-                    ? voice.stop()
-                    : voice.start())
-                }
-              >
-                {voice.phase === "recording"
-                  ? "Stop recording"
-                  : voice.phase === "transcribing"
-                    ? "Transcribing…"
-                    : "Dictate context"}
-              </button>
+              <DictationControl
+                state={voice}
+                disabled={disabled || working}
+                onStart={() => void voice.start()}
+                onStop={() => void voice.stop()}
+                onCancel={voice.cancel}
+              />
               {paper?.input.source.includes("1910.02884") ? (
                 <button
                   type="button"
@@ -317,7 +308,12 @@ export function NewExperiment({
                 </button>
               ) : null}
             </div>
-            {voice.error ? <p className="error-text">{voice.error}</p> : null}
+            {voice.error ? (
+              <DictationError
+                message={voice.error}
+                onDismiss={voice.clearError}
+              />
+            ) : null}
             <details className="experiment-options">
               <summary>
                 Data, code &amp; execution limits{" "}
