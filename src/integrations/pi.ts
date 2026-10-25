@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -8,12 +7,10 @@ import { Type, type TSchema } from 'typebox';
 import { displayText, messageBlocks, readArtifactPreview } from '../core/conversation.js';
 import type { Model } from '@earendil-works/pi-ai';
 import {
-  createAgentSession,
   createReadToolDefinition,
   createWriteToolDefinition,
   createEditToolDefinition,
   createBashToolDefinition,
-  DefaultResourceLoader,
   getAgentDir,
   ModelRuntime,
   SessionManager,
@@ -27,10 +24,12 @@ import { SpecSchema } from '../shared/types.js';
 import type { AppSettings, ComputeContext, ConnectionStatus, ConversationBlock, ConversationUpdate, ExperimentRun, ExperimentSpec } from '../shared/types.js';
 import { executionEnv } from '../compute/process.js';
 import { webSearch } from './web-search.js';
+import { createSnapCompactResources, privateSessionDirectory, snapCompactPackage } from './snapcompact.js';
+import { openPiSession, type PiSession } from './pi-session.js';
 
 const AGENT_TIMEOUT_MS = 20 * 60_000;
 const STATUS_TIMEOUT_MS = 15_000;
-const moduleRequire = createRequire(path.join(process.cwd(), 'package.json'));
+
 
 export interface PiAgentContext {
   run: ExperimentRun;
@@ -95,75 +94,12 @@ async function emitSafe(context: PiAgentContext, type: 'agent' | 'log' | 'error'
   }
 }
 
-function smartCompactPackage(): { version: string; extensionPath: string } {
-  const packageJson = moduleRequire.resolve('smartcompact/package.json');
-  const parsed: unknown = JSON.parse(readFileSync(packageJson, 'utf8'));
-  if (!parsed || typeof parsed !== 'object' || !('version' in parsed) || typeof parsed.version !== 'string') {
-    throw new Error(`SmartCompact: в ${packageJson} отсутствует version`);
-  }
-  const extensionPath = path.join(path.dirname(packageJson), 'adapters', 'pi', 'index.ts');
-  if (!existsSync(extensionPath)) throw new Error(`SmartCompact: расширение не найдено по пути ${extensionPath}`);
-  return { version: parsed.version, extensionPath };
-}
-
-export interface SmartCompactProbe {
-  version: string;
-  extensionPath: string;
-  loaded: boolean;
-  extensionCount: number;
-  errors: Array<{ path: string; error: string }>;
-  warnings: Array<{ path: string; warning: string }>;
-}
-
-let smartCompactProbeCache: Promise<SmartCompactProbe> | undefined;
-
-async function loadSmartCompactProbe(): Promise<SmartCompactProbe> {
-  const info = smartCompactPackage();
-  const loader = new DefaultResourceLoader({
-    cwd: process.cwd(),
-    agentDir: getAgentDir(),
-    additionalExtensionPaths: [info.extensionPath],
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    settingsManager: SettingsManager.inMemory({})
-  });
-  await loader.reload();
-  const result = loader.getExtensions();
-  return {
-    version: info.version,
-    extensionPath: info.extensionPath,
-    loaded: result.extensions.length > 0,
-    extensionCount: result.extensions.length,
-    errors: result.errors,
-    warnings: result.warnings ?? []
-  };
-}
-
-/**
- * Explicit smoke hook for the real npm extension load. It does not need provider credentials and
- * never asks the model to compact anything.
- */
-export function probeSmartCompact(): Promise<SmartCompactProbe> {
-  smartCompactProbeCache ??= loadSmartCompactProbe().catch(error => {
-    throw new Error(`SmartCompact: реальная загрузка расширения не удалась: ${errorMessage(error)}`);
-  });
-  return smartCompactProbeCache;
-}
-
-async function smartCompactStatus(): Promise<ConnectionStatus> {
+async function snapCompactStatus(): Promise<ConnectionStatus> {
   try {
-    const probe = await probeSmartCompact();
-    if (probe.errors.length) {
-      return { component: 'smartcompact', state: 'error', detail: `Ошибки загрузки: ${probe.errors.slice(0, 3).map(entry => `${path.basename(entry.path)}: ${errorMessage(entry.error)}`).join('; ')}` };
-    }
-    if (!probe.loaded) return { component: 'smartcompact', state: 'error', detail: `SmartCompact ${probe.version} не зарегистрировал ни одного расширения (${probe.extensionPath}).` };
-    const warnings = probe.warnings.length ? `; предупреждений: ${probe.warnings.length}` : '';
-    return { component: 'smartcompact', state: 'ready', detail: `SmartCompact ${probe.version} загружен из ${probe.extensionPath}${warnings}. Пассивно сообщает о реальных событиях компакции.` };
+    const info = snapCompactPackage();
+    return { component: 'snapcompact', state: 'ready', detail: `SnapCompact ${info.version}: PNG-архивы с HMAC. Для Pi нужна vision-модель; текстовый fallback запрещён. Live inference не проверяется статусом.` };
   } catch (error) {
-    return { component: 'smartcompact', state: 'error', detail: errorMessage(error) };
+    return { component: 'snapcompact', state: 'error', detail: errorMessage(error) };
   }
 }
 
@@ -195,6 +131,8 @@ async function selectPiModel(settings: AppSettings, signal: AbortSignal): Promis
     if (!configured.length) throw new SetupRequiredError('pi: не найдено ни одного провайдера с учётными данными. Откройте Настройки → Войти в Pi, используйте pi /login или переменную окружения провайдера.');
     throw new SetupRequiredError(`pi: нет доступной модели. Настроены провайдеры: ${configured.join(', ')}. Выберите провайдера и модель в настройках.`);
   }
+  if (!selected.input.includes('image')) throw new SetupRequiredError('SnapCompact: выбранная модель не поддерживает изображения. Выберите vision-модель; native text fallback отключён.');
+  if (selected.api === 'pi-virtual') throw new SetupRequiredError('SnapCompact: выберите физическую vision-модель; динамическая маршрутизация reader пока не проверена.');
   const auth = runtime.getProviderAuthStatus(selected.provider);
   return { runtime, model: selected, authSource: auth.source === 'stored' ? 'auth.json/OAuth' : auth.source === 'environment' ? 'переменная окружения' : auth.source === 'runtime' ? 'ключ процесса' : auth.label ?? 'настроено' };
 }
@@ -218,7 +156,7 @@ async function piStatus(settings: AppSettings): Promise<ConnectionStatus> {
 export async function getAgentStatuses(settings: AppSettings): Promise<ConnectionStatus[]> {
   return Promise.all([
     piStatus(settings).catch(error => ({ component: 'pi' as const, state: 'error' as const, detail: errorMessage(error) })),
-    smartCompactStatus()
+    snapCompactStatus()
   ]);
 }
 
@@ -228,57 +166,38 @@ async function createPiSession(context: PiAgentContext, options: {
   tools: string[];
   customTools?: ToolDefinition<any, any, any>[];
   signal: AbortSignal;
-}): Promise<{ session: AgentSession; close: () => Promise<void> }> {
+}): Promise<PiSession> {
   const selection = await selectPiModel(context.settings, options.signal);
-  const smartcompact = smartCompactPackage();
-  const loader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir: getAgentDir(),
-    additionalExtensionPaths: [smartcompact.extensionPath],
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    settingsManager: SettingsManager.inMemory({}),
-    systemPrompt: options.systemPrompt
+  const settingsManager = SettingsManager.inMemory({});
+  const resources = await createSnapCompactResources({
+    cwd: options.cwd, agentDir: getAgentDir(), settingsManager, systemPrompt: options.systemPrompt,
+    diagnostic: (message, error) => { void emitSafe(context, error ? 'error' : 'compaction', message); }
   });
-  await loader.reload();
-  const loaded = loader.getExtensions();
-  for (const entry of loaded.errors.slice(0, 3)) await emitSafe(context, 'error', `SmartCompact не загрузился (${entry.path}): ${entry.error}`);
-  for (const entry of (loaded.warnings ?? []).slice(0, 3)) await emitSafe(context, 'log', `SmartCompact: ${entry.warning}`);
-
   const manager = context.run.sessionFile
     ? SessionManager.open(context.run.sessionFile, undefined, options.cwd)
-    : SessionManager.create(options.cwd, path.join(context.run.dir, 'session'));
+    : SessionManager.create(options.cwd, privateSessionDirectory(path.join(context.run.dir, 'session')));
+  privateSessionDirectory(manager.getSessionDir());
   // Bump when the system prompt or tool schemas change. Signed provider context
   // requires an explicit handoff, not editing or silently discarding old messages.
-  const contextVersion = 6;
+  const contextVersion = 7;
   const branch = manager.getBranch();
   const contract = branch.findLast(entry => entry.type === 'custom' && entry.customType === 'harness.context');
   if (context.run.sessionFile && (!contract || contract.type !== 'custom' || (contract.data as { version?: number } | undefined)?.version !== contextVersion)) {
     const dialogue = branch.flatMap(entry => entry.type === 'message' && (entry.message.role === 'user' || entry.message.role === 'assistant') ? messageBlocks(entry.message).filter(block => block.kind !== 'tool').map(block => `${block.kind}: ${block.text}`) : []).join('\n\n');
     const lastAssistant = branch.findLast(entry => entry.type === 'message' && entry.message.role === 'assistant');
     const tokens = lastAssistant?.type === 'message' && lastAssistant.message.role === 'assistant' ? lastAssistant.message.usage.totalTokens : 0;
+    // Snap's allow-listed handoff format stays v3; the tool contract advances independently.
     manager.appendCompaction([
       'Harness context handoff: the tool contract changed. The full earlier transcript is preserved on disk and in the UI. Do not replay or invent old hidden reasoning.',
       'Consult get_experiment for the authoritative research brief, approved protocol, implementation contract, measured results and artifacts. Continue this research, not a new experiment.',
       'Recent visible dialogue (verbatim trailing excerpt; may begin mid-message):',
       dialogue.slice(-24000)
-    ].join('\n\n'), null, tokens, { reason: 'harness_context_upgrade', contextVersion });
+    ].join('\n\n'), null, tokens, { reason: 'harness_context_upgrade', contextVersion: 3, toolContextVersion: contextVersion });
     await emitSafe(context, 'compaction', 'Research tool contract updated. Full transcript preserved; the agent resumes from the scientific record and recent visible dialogue.');
   }
   if (!contract || contract.type !== 'custom' || (contract.data as { version?: number } | undefined)?.version !== contextVersion) manager.appendCustomEntry('harness.context', { version: contextVersion });
-  const { session } = await createAgentSession({
-    cwd: options.cwd,
-    modelRuntime: selection.runtime,
-    model: selection.model,
-    tools: options.tools,
-    customTools: options.customTools,
-    resourceLoader: loader,
-    sessionManager: manager,
-    settingsManager: SettingsManager.inMemory({})
-  });
+  options.signal.throwIfAborted();
+  let session: AgentSession;
   const changes = new Map<string, ConversationBlock>();
   const tools = new Map<string, ConversationBlock>();
   let timer: NodeJS.Timeout | undefined;
@@ -289,7 +208,14 @@ async function createPiSession(context: PiAgentContext, options: {
     changes.clear();
   };
   const update = (block: ConversationBlock) => { changes.set(block.id, block); timer ??= setTimeout(flush, 60); };
-  const unsubscribe = session.subscribe(event => {
+  const opened = await openPiSession({
+    cwd: options.cwd, agentDir: getAgentDir(), modelRuntime: selection.runtime, model: selection.model,
+    tools: options.tools, customTools: options.customTools, sessionManager: manager, settingsManager
+  }, resources, {
+    mode: 'print',
+    abortHandler: () => { void session?.abort().catch(() => undefined); },
+    onError: error => { void emitSafe(context, 'error', `Расширение pi (${error.event || 'event'}): ${error.error}`); }
+  }, event => {
     const sessionFile = manager.getSessionFile();
     if (sessionFile && sessionFile !== context.run.sessionFile && existsSync(sessionFile)) void context.persist({ sessionFile }).catch(error => { void emitSafe(context, 'error', errorMessage(error)); void session.abort(); });
     if (event.type === 'message_start' || event.type === 'message_update' || event.type === 'message_end') {
@@ -325,39 +251,21 @@ async function createPiSession(context: PiAgentContext, options: {
     }
     if (event.type === 'tool_execution_start') void emitSafe(context, 'agent', `pi выполняет инструмент ${event.toolName}`);
     if (event.type === 'tool_execution_end') void emitSafe(context, event.isError ? 'error' : 'agent', `pi: ${event.toolName} ${event.isError ? 'завершился ошибкой' : 'завершён'}`);
-    if (event.type === 'compaction_start') void emitSafe(context, 'compaction', `pi начал компакцию (${event.reason}); SmartCompact не форсирует её.`);
+    if (event.type === 'compaction_start') void emitSafe(context, 'compaction', `strategy=snapcompact trigger=${event.reason}: pi начал компакцию.`);
     if (event.type === 'compaction_end') {
       const freed = event.result ? ` до ~${event.result.estimatedTokensAfter ?? '?'} токенов (было ${event.result.tokensBefore})` : '';
       void emitSafe(context, 'compaction', event.errorMessage ? `pi: компакция не удалась (${event.reason}): ${event.errorMessage}` : `pi завершил компакцию (${event.reason})${freed}${event.aborted ? ', прервана' : ''}.`);
     }
   });
-  const close = async () => {
-    flush();
-    unsubscribe();
-    try {
-      // Match SDK AgentSessionRuntime.dispose(): extensions release timers before invalidation.
-      if (session.extensionRunner.hasHandlers('session_shutdown')) {
-        await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-      }
-    } finally {
-      session.dispose();
-    }
+  session = opened.session;
+  let closing: Promise<void> | undefined;
+  return {
+    ...opened,
+    close: () => closing ??= (async () => {
+      try { await opened.close(); }
+      finally { flush(); }
+    })()
   };
-  try {
-    await session.bindExtensions({
-      mode: 'print',
-      abortHandler: () => {
-        void session.abort().catch(() => undefined);
-      },
-      onError: error => {
-        void emitSafe(context, 'error', `Расширение pi (${error.event || 'event'}): ${error.error}`);
-      }
-    });
-  } catch (error) {
-    await close();
-    throw error;
-  }
-  return { session, close };
 }
 
 function abortMessage(deadline: Deadline, label: string, signal: AbortSignal): Error {
@@ -366,7 +274,8 @@ function abortMessage(deadline: Deadline, label: string, signal: AbortSignal): E
   return new Error(`${label}: ${reason instanceof Error ? reason.message : 'отменено'}`);
 }
 
-async function promptPi(session: AgentSession, text: string, deadline: Deadline, label: string, allowEmpty = false): Promise<string> {
+async function promptPi(opened: PiSession, text: string, deadline: Deadline, label: string, allowEmpty = false): Promise<string> {
+  const { session } = opened;
   if (deadline.signal.aborted) throw abortMessage(deadline, label, deadline.signal);
   const onAbort = () => {
     void session.abort().catch(() => undefined);
@@ -374,6 +283,7 @@ async function promptPi(session: AgentSession, text: string, deadline: Deadline,
   deadline.signal.addEventListener('abort', onAbort, { once: true });
   try {
     await session.prompt(text, { expandPromptTemplates: false });
+    opened.assertHealthy();
   } catch (error) {
     if (deadline.signal.aborted) throw abortMessage(deadline, label, deadline.signal);
     throw new Error(`${label}: ${errorMessage(error)}`);
@@ -487,7 +397,6 @@ function buildPlanPrompt(run: ExperimentRun): string {
     'Источник доступен через read_source: прочитай нужные страницы перед цитированием.'
   ].join('\n');
 }
-
 
 
 
@@ -725,7 +634,7 @@ export async function converseWithPi(context: PiCodeAgentContext, text: string, 
     });
     session = opened.session;
     context.attach(session);
-    const running = promptPi(session, text, deadline, 'Pi', true);
+    const running = promptPi(opened, text, deadline, 'Pi', true);
     // Observe immediately: queue delivery can fail while the provider is still running.
     void running.catch(() => undefined);
     try {

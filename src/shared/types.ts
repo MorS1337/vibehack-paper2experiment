@@ -158,7 +158,7 @@ export interface AppSettings {
   sshKeyPath: string;
 }
 export interface ConnectionStatus {
-  component: "pi" | "jev" | "vast" | "whisper" | "smartcompact";
+  component: "pi" | "jev" | "vast" | "whisper" | "snapcompact";
   state: "ready" | "needs_setup" | "error";
   detail: string;
 }
@@ -174,6 +174,7 @@ export interface ProjectManifest {
   requirements: string;
   artifacts: string[];
 }
+
 export interface ComputeContext {
   run: ExperimentRun;
   spec: ExperimentSpec;

@@ -94,7 +94,7 @@ skip; диагностика сохраняется только при ошиб
 | arXiv/PDF | `1910.02884v1`: 17 текстовых страниц, сохранены PDF/извлечённый текст, проверен SHA-256. |
 | Whisper | Физический встроенный микрофон MacBook Pro → AudioWorklet → WAV → IPC → whisper.cpp `1.9.5-dev` (tag `v1.9.5`), multilingual `base` → редактируемая задача. Научные термины распознаны с ошибками; экспериментов создано 0. [Подробности проверки](docs/whisper-verification.md). |
 | Whisper в новом UI | Синтетическая русская запись → настоящий AudioWorklet/WAV/IPC/whisper.cpp, multilingual `tiny` → редактируемый контекст брифа. Track остановлен; автоматического запуска не было. Ошибки распознавания научных терминов остаются; физический микрофон этим smoke не проверялся. |
-| SmartCompact | Настоящий пакет 0.1.8 загружен через pi: одно расширение, ноль ошибок/предупреждений. Compaction не форсировался. |
+| SnapCompact | Подключён настоящий пакет 0.1.1 к Pi SDK 1.4.0. Авторские integration tests покрывают PNG, HMAC, restart, порядок кадров и Anthropic transport на локальный HTTP-сервер; при stop-code интеграции они не запускались. Live vision inference не проверен. |
 | Pi inference/генерация кода | По отчёту автора UI-ветки: OpenCode Go / `claude-haiku-5-5`, реальный план, проверка/сохранение v2, код инструментами Pi, Local Python exit 0 и отчёт. Независимый пересчёт `223/10000 = 0.0223`, 6 артефактов. Это не отдельный coding worker; при интеграции этот платный inference не повторялся. |
 | Vast: read-only поиск | Нативный ключ и фактические предложения проверены, включая совместимость образа и точечную revalidation через `ask_contract_id`. Provisioning/SSH ещё не выполнялись; платный lifecycle требует отдельного бюджета/разрешения. |
 
@@ -303,13 +303,52 @@ whisper-cli -m /absolute/path/ggml-large-v3-turbo.bin -f /tmp/russian.wav -l ru 
 Проверьте, что карточка эксперимента не создана. Повторите с отменой и закрытием
 формы: индикатор использования микрофона должен погаснуть, текст не добавляется.
 
-### SmartCompact
+### SnapCompact
 
-`smartcompact@0.1.8` из [coffeecoproject/SmartCompact](https://github.com/coffeecoproject/SmartCompact)
-подключён через pi `DefaultResourceLoader` и механизм расширений. UI получает
-настоящие события pi/расширения, а не симуляцию сокращения контекста. Штатный allow
-line — 200k токенов; короткая сессия может не потребовать compaction. Планы, состояние
-и результаты хранятся на диске независимо от контекста модели.
+Используется единственное расширение
+[`@nomeelnoj/pi-snap-compact@0.1.1`](https://github.com/nomeelnoj/pi-snap-compact),
+загруженное через штатный `DefaultResourceLoader` Pi SDK 1.4.0. Оно сериализует
+старые сообщения и tool calls, рисует PNG локально и восстанавливает упорядоченные
+image blocks перед следующим запросом. Компактизация не вызывает модель.
+Порог определяет Pi; короткая сессия не обязана компактироваться.
+
+Политика harness — **физическая vision-модель и fail closed**. Текстовые и virtual
+модели, отключённый SnapCompact/HMAC, directed LLM compaction, повреждённые или
+пропавшие архивы и превышение бюджетов останавливают операцию с диагностикой.
+Native text fallback отключён. Если upstream-сериализация усекла бы tool output
+или исходные изображения, компактизация также отклоняется. История не заменяется
+неполным текстовым summary. Лимиты: 250 000 символов source, 2 MB входных сообщений,
+12 изображений на запрос, 512 KiB на PNG, 3 MB base64 на запрос; пользовательские
+настройки upstream могут уменьшить бюджеты. Это локальные защитные лимиты, а не
+гарантия лимитов каждого внешнего gateway.
+
+Один продолжающийся разговор сохраняется в JSONL в `<experiment>/session/`;
+`sessionFile` хранится в записи эксперимента и открывается повторно при следующем
+сообщении. Планирование, инструменты, проверка approval и отчёт остаются частями
+этого разговора. `SessionManager.inMemory()` не подходит: он не сохраняет архив
+после перезапуска. Метаданные архива находятся в compaction entry, PNG имеют имена
+SHA-256, подпись HMAC проверяется штатной библиотекой.
+Ключ хранится отдельно в `~/.pi/agent/snapcompact.key` (или `PI_CODING_AGENT_DIR`),
+не отправляется модели или Vast. На POSIX каталоги закрываются mode 0700,
+сессии/PNG — 0600; на Windows защита зависит от ACL пользовательской директории.
+JSONL может содержать чувствительный текст источников и инструментов.
+
+Нормализация текста и чтение мелкого шрифта моделью не гарантируют точного
+восстановления каждого символа. Исходные сообщения сохраняются в JSONL независимо
+от визуального архива. При смене контракта инструментов существующий harness handoff
+явно сохраняет последние 24 000 символов видимого диалога и научную запись; полный
+старый transcript остаётся на диске и в UI. Этот одноразовый migration marker
+`harness_context_upgrade` версии 3 — не SnapCompact-архив и не скрытый fallback.
+Прочие неаутентифицированные compaction entries блокируют запрос.
+Повторное открытие архива требует той же машины/ключа; перенос без ключа блокируется.
+
+Закрытие разговора ожидает abort и `AgentSessionRuntime.dispose()`, включая ошибку
+bind, отмену и shutdown harness. Повторные close используют общий Promise.
+
+`node --import tsx --test tests/snapcompact.test.ts` не обращается к платным API:
+использует настоящий renderer, archive implementation, SDK lifetime guard и
+Anthropic HTTP encoder с локальным сервером. Live inference, точность чтения PNG,
+другие provider adapters и реальные API gateways требуют отдельной проверки.
 
 ## Рабочий сценарий настоящего режима Pi
 
@@ -382,7 +421,7 @@ npm run smoke
 - `src/renderer`: React; нет Node API, ключей, прямого SSH или процессов.
 - `src/core`: отдельный Electron utility process; атомарные JSON, JSONL, версии планов,
   импорт источника, статусы, валидация и отчёты.
-- `src/integrations`: pi + настоящее расширение SmartCompact, Jev, whisper.cpp.
+- `src/integrations`: pi + настоящее расширение SnapCompact, Jev, whisper.cpp.
 - `src/compute`: общий prepare/run/getStatus/streamLogs/cancel/collectArtifacts/cleanup,
   LocalBackend и VastBackend. На Vast передаются проект/данные, не агенты/ключи.
 
@@ -405,7 +444,7 @@ watchdog, но недоступный API не гарантирует остан
 
 ## Зависимости и лицензия
 
-Версии закреплены `package-lock.json`: pi 1.4.0, SmartCompact 0.1.8, Jev SDK 0.7.0,
+Версии закреплены `package-lock.json`: pi 1.4.0, SnapCompact 0.1.1, Jev SDK 0.7.0,
 Electron 45.0.0, React 19.2.0, TypeScript 5.9.3, PDF.js 5.4.624. Zod 4.6.7 и override
 Undici 8.12.3 закрывают найденные runtime advisories без отката pi на старую ветку.
 Наш код — [MIT](LICENSE); статьи, модели и зависимости сохраняют собственные лицензии.
@@ -424,7 +463,7 @@ PDF не включён в репозиторий: fetch-скрипт скачи
 - [#5 Pi: настоящий путь от документа до кода и результата](https://github.com/MorS1337/vibehack-paper2experiment/issues/5)
 - [#4 Vast: live lifecycle, бюджет, SSH, отмена и cleanup](https://github.com/MorS1337/vibehack-paper2experiment/issues/4)
 - [#2 Jev: реальный выбор из допустимых compute-вариантов](https://github.com/MorS1337/vibehack-paper2experiment/issues/2)
-- [#11 SnapCompact: реальная замена прежнего SmartCompact](https://github.com/MorS1337/vibehack-paper2experiment/issues/11)
+- [#11 SnapCompact: настоящий bitmap-frame compactor](https://github.com/MorS1337/vibehack-paper2experiment/issues/11)
 - [#3 Whisper — выполнено и закрыто](https://github.com/MorS1337/vibehack-paper2experiment/issues/3)
 - [#1 CI — выполнено и закрыто](https://github.com/MorS1337/vibehack-paper2experiment/issues/1)
 
