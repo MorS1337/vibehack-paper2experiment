@@ -1,6 +1,6 @@
 import { access, statfs } from 'node:fs/promises';
 import os from 'node:os';
-import { checkJevStatus, chooseComputeTarget, JevNoSuitableOptionError } from '../integrations/jev.js';
+import { checkJevStatus, chooseComputeTarget } from '../integrations/jev.js';
 import { SetupRequiredError } from '../shared/errors.js';
 import type { AppSettings, ComputeContext, ComputeTarget, ConnectionStatus, ExperimentInput, ExperimentSpec } from '../shared/types.js';
 import { executionEnv, runProcess } from './process.js';
@@ -87,13 +87,9 @@ async function vastCandidates(ctx: ComputeContext): Promise<ComputeTarget[]> {
   const client = new VastApiClient(credential.key);
   const offers = await client.searchOffers(vastSearchBody(ctx.spec), { signal: ctx.signal, timeoutMs: 30_000 });
   const targets = selectVastTargets(offers, ctx.spec);
-  if (targets.length === 0) throw new Error(`Vast не вернул ни одного предложения, прошедшего ресурсные и бюджетные фильтры (получено ${offers.length})`);
   return targets;
 }
 
-function cheapest(targets: ComputeTarget[]): ComputeTarget {
-  return [...targets].sort((a, b) => a.estimatedUSD - b.estimatedUSD || a.hourlyUSD - b.hourlyUSD || a.id.localeCompare(b.id))[0];
-}
 
 async function autoTarget(ctx: ComputeContext): Promise<ComputeTarget> {
   const candidates: ComputeTarget[] = [];
@@ -107,41 +103,14 @@ async function autoTarget(ctx: ComputeContext): Promise<ComputeTarget> {
     localReason = String(error);
   }
 
-  let vastError: string | null = null;
   if (ctx.spec.limits.maxHourlyUSD > 0 && ctx.spec.limits.maxTotalUSD > 0) {
-    try {
-      const targets = await vastCandidates(ctx);
-      const room = candidates.length > 0 ? 5 : 6;
-      candidates.push(...targets.slice(0, room));
-    } catch (error) {
-      vastError = error instanceof Error ? error.message : String(error);
-      if (ctx.signal.aborted) throw error;
-    }
-  } else if (candidates.length === 0) {
-    localReason = `${localReason ?? 'локальная машина не подходит'}; платные лимиты равны нулю`;
+    const targets = await vastCandidates(ctx);
+    candidates.push(...targets.slice(0, candidates.length > 0 ? 5 : 6));
   }
-
-  if (candidates.length === 0) {
-    const details = [localReason ? `локально: ${localReason}` : '', vastError ? `Vast: ${vastError}` : ''].filter(Boolean).join('; ');
-    throw new Error(`Автовыбор не нашёл подходящего варианта (${details || 'нет кандидатов'})`);
-  }
-  if (vastError) await ctx.emit('error', `Vast недоступен при автовыборе: ${vastError}`);
-  const shortlist = candidates.slice(0, 6);
-  if (shortlist.length === 1) return shortlist[0];
-  if (process.env.TYPESAFE_API_KEY?.trim()) {
-    try {
-      const selected = await chooseComputeTarget(shortlist, ctx.spec, ctx.signal);
-      await ctx.emit('compute', `Jev выбрал ${selected.target.id} (${selected.label}, confidence ${selected.confidence.toFixed(3)}, модель ${selected.model})`);
-      return selected.target;
-    } catch (error) {
-      if (ctx.signal.aborted) throw ctx.signal.reason instanceof Error ? ctx.signal.reason : error;
-      if (error instanceof JevNoSuitableOptionError) throw error;
-      await ctx.emit('error', `Jev не смог выбрать compute; используется детерминированный минимальный тариф: ${String(error)}`);
-    }
-  } else {
-    await ctx.emit('compute', 'TYPESAFE_API_KEY не задан: Jev пропущен, выбран детерминированный минимальный тариф');
-  }
-  return cheapest(shortlist);
+  if (candidates.length === 0) throw new Error(`Автовыбор не нашёл подходящего варианта; локально: ${localReason ?? 'нет подходящего предложения Vast'}`);
+  const selected = await chooseComputeTarget(candidates, ctx.spec, ctx.signal);
+  await ctx.emit('compute', `Jev выбрал ${selected.target.id} (${selected.label}, confidence ${selected.confidence.toFixed(3)}, модель ${selected.model})`);
+  return selected.target;
 }
 
 /** Selection is read-only: Vast offer search only; no instance is created until approval + prepare. */
@@ -155,7 +124,10 @@ export async function selectCompute(ctx: ComputeContext, mode: ExperimentInput['
   }
   if (mode === 'vast') {
     const targets = await vastCandidates(ctx);
-    const target = targets[0];
+    if (targets.length === 0) throw new Error('Vast: ни одного предложения в пределах требований и бюджета');
+    const selected = await chooseComputeTarget(targets.slice(0, 6), ctx.spec, ctx.signal);
+    const target = selected.target;
+    await ctx.emit('compute', `Jev выбрал ${target.id} (${selected.label}, confidence ${selected.confidence.toFixed(3)}, модель ${selected.model})`);
     await ctx.emit('compute', `Выбрано Vast-предложение ${target.offerId}: ${target.hourlyUSD}$/ч, резерв итога ${target.estimatedUSD}$ (до подтверждения инстанс не создаётся)`);
     return target;
   }

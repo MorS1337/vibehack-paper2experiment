@@ -136,6 +136,20 @@ test('rejects a recomputed metric disagreement', async () => {
   });
 });
 
+test('accepts matching nested plan parameters with different key order', async () => {
+  await withRoot(async root => {
+    const run = await writeFixture(root);
+    const nested = { options: { beta: 2, alpha: 1 }, n_values_meta: [4, 2] };
+    run.spec!.parameters.simulation = nested;
+    const configPath = path.join(root, 'project/config.json');
+    const configObject = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    configObject.simulation = { n_values_meta: [4, 2], options: { alpha: 1, beta: 2 } };
+    await writeFile(configPath, JSON.stringify(configObject));
+    const result = await collectAndValidate(run);
+    assert.equal(result.metrics.empirical_tail_probability, 0.5);
+  });
+});
+
 test('rejects scientific config drift from the frozen plan', async () => {
   await withRoot(async root => {
     const run = await writeFixture(root);

@@ -7,7 +7,7 @@ export interface ExportRecord {
   sha256: string;
 }
 
-const EXPORT_MEMBER = /^(?:artifacts/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+|stdout\.log|stderr\.log)$/;
+const EXPORT_MEMBER = /^(?:artifacts\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+|stdout\.log|stderr\.log)$/;
 const INVENTORY_FILE = '.p2e-artifacts.sha256';
 
 /** Rejects anything that could escape project/ during member extraction. */

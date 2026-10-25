@@ -217,7 +217,7 @@ function binomialUpperTail(n: number, p: number, threshold: number, logFacts: Fl
  */
 function validateDemoConfig(config: JsonObject): DemoConfig {
   for (const key of DEMO_PARAMETERS) {
-    if (!(key in config)) fail(`config.json: отсутствует научный параметр ${key}`);
+    if (!Object.hasOwn(config, key)) fail(`config.json: отсутствует научный параметр ${key}`);
   }
   const p = readNumber(config, 'p', 'config.json');
   const epsilon = readNumber(config, 'epsilon', 'config.json');
@@ -256,15 +256,23 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) || Array.isArray(b)) {
     return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => deepEqual(value, b[index]));
   }
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    return leftKeys.every(key => Object.hasOwn(right, key) && deepEqual(left[key], right[key]));
+  }
   return a === b;
 }
 
 function verifyParametersAgainstSpec(configObject: JsonObject, parameters: Record<string, unknown>): void {
   for (const key of DEMO_PARAMETERS) {
-    if (!(key in parameters)) fail(`plan.parameters: отсутствует научный параметр ${key}; изменяйте условия только новой версией плана`);
+    if (!Object.hasOwn(parameters, key)) fail(`plan.parameters: отсутствует научный параметр ${key}; изменяйте условия только новой версией плана`);
   }
   for (const [key, expected] of Object.entries(parameters)) {
-    if (!(key in configObject)) fail(`config.json: отсутствует параметр замороженного плана ${key}`);
+    if (!Object.hasOwn(configObject, key)) fail(`config.json: отсутствует параметр замороженного плана ${key}`);
     if (!deepEqual(configObject[key], expected)) fail(`plan/config: ${key} не совпадает с замороженным планом`);
   }
 }

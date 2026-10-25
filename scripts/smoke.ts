@@ -145,15 +145,19 @@ async function timeoutProbe(root: string): Promise<void> {
   await context.ctx.persist({ status: 'running' });
   const startedAt = Date.now();
   let timedOut = false;
+  let cancellation: Promise<void> = Promise.resolve();
+  let cancellationError: unknown;
   const timer = setTimeout(() => {
     timedOut = true;
-    void context.backend.cancel(context.ctx).catch(error => console.log(`timeout cancel: ${String(error)}`));
+    cancellation = context.backend.cancel(context.ctx).catch(error => { cancellationError = error; });
   }, 1200);
   const result = await Promise.race([
     context.backend.run(context.ctx).catch(error => ({ exitCode: -1, stderr: String(error) })),
     delay(15000).then(() => ({ exitCode: -2, stderr: 'timeout probe did not stop within 15s' }))
   ]);
   clearTimeout(timer);
+  await cancellation;
+  if (cancellationError) throw cancellationError;
   const elapsedMs = Date.now() - startedAt;
   const status = await context.backend.getStatus(context.ctx);
   let alive = false;
