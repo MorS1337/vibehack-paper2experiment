@@ -20,6 +20,8 @@ import type {
   Snapshot,
 } from "../shared/types.js";
 import { getApi, errorMessage } from "./lib/api.js";
+import { CollabConnect } from "./components/CollabConnect.js";
+import { CollabPanel, PhoneGlyph } from "./components/CollabPanel.js";
 import { SettingsView } from "./components/SettingsView.js";
 import { Conversation, FilePreview } from "./components/Conversation.js";
 import { NewExperiment } from "./components/NewExperiment.js";
@@ -214,6 +216,8 @@ function PlanView({
 
 function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
   const [file, setFile] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState("");
+  const [downloading, setDownloading] = useState(false);
   useEffect(() => setFile(null), [run.id]);
   return (
     <div className="inspector-document">
@@ -274,6 +278,8 @@ function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
               </button>
             ))}
         </div>
+        {file && api.downloadArtifact && run.artifacts.some(item => item.path === file) && <button className="remote-file-download" disabled={downloading} onClick={() => { setDownloading(true); setDownloadError(""); void api.downloadArtifact!(run.id, file).catch(cause => setDownloadError(errorMessage(cause))).finally(() => setDownloading(false)); }}>{downloading ? "Downloading…" : "Download file ↓"}</button>}
+        {downloadError && <p className="error-text" role="alert">{downloadError}</p>}
         {file ? (
           <FilePreview key={file} api={api} run={run} file={file} />
         ) : null}
@@ -295,6 +301,11 @@ function FilesView({ api, run }: { api: AppAPI; run: ExperimentRun }) {
 }
 
 function AppShell({ api }: { api: AppAPI }) {
+  const [showCollab, setShowCollab] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  const [connection, setConnection] = useState<'connected' | 'reconnecting' | 'expired'>('connected');
+  const viewOnly = api.access === 'view';
+  useEffect(() => api.connection?.(setConnection), [api]);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("chat");
@@ -350,6 +361,8 @@ function AppShell({ api }: { api: AppAPI }) {
   useEffect(() => {
     let timer: number | undefined;
     const stopEvents = api.onEvent((event) => {
+      const eventRun = event.runId || selected.current;
+      if (event.id === "sync" && eventRun) void api.events(eventRun).then(history => { if (selected.current === eventRun) setEvents(history); }).catch(cause => setError(errorMessage(cause)));
       if (selected.current === event.runId)
         setEvents((previous) => [...previous, event].slice(-500));
       timer ??= window.setTimeout(() => {
@@ -358,11 +371,11 @@ function AppShell({ api }: { api: AppAPI }) {
           .current()
           .catch((cause) => setError(errorMessage(cause)));
       }, 250);
-      if (event.type === "status" && selected.current === event.runId) {
+      if (event.type === "status" && eventRun && selected.current === eventRun) {
         void api
-          .conversation(event.runId)
+          .conversation(eventRun)
           .then((result) => {
-            if (selected.current === event.runId) {
+            if (selected.current === eventRun) {
               setBlocks((previous) => mergeBlocks(previous, result.blocks));
               setPage((current) => ({
                 ...result,
@@ -448,6 +461,8 @@ function AppShell({ api }: { api: AppAPI }) {
   );
   const paperNavigation = useMemo(() => ({ cite }), [cite]);
   const newExperiment = () => {
+    if (viewOnly) return;
+    setNavOpen(false);
     setDraftId(null);
     setIntakeStage("paper");
     setBriefPassage(null);
@@ -467,6 +482,7 @@ function AppShell({ api }: { api: AppAPI }) {
     requestAnimationFrame(() => textarea.current?.focus());
   };
   const perform = async (action: () => Promise<unknown>) => {
+    if (viewOnly) { setError("This connection is view-only."); return false; }
     setOperation(true);
     setError("");
     try {
@@ -488,7 +504,7 @@ function AppShell({ api }: { api: AppAPI }) {
   };
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!run || !draft.trim() || operation || otherActive) return;
+    if (viewOnly || !run || !draft.trim() || operation || otherActive) return;
     const text = draft;
     setDraft("");
     const ok = await perform(() => api.sendMessage(run.id, text, delivery));
@@ -511,6 +527,7 @@ function AppShell({ api }: { api: AppAPI }) {
     }
   };
   const importPaper = async (source: string) => {
+    if (viewOnly) throw new Error("This connection is view-only.");
     const imported = await api.importPaper(source);
     setDraftId(imported.id);
     setIntakeStage("paper");
@@ -521,12 +538,13 @@ function AppShell({ api }: { api: AppAPI }) {
     await refresh();
   };
   const startResearch = async (input: ExperimentInput) => {
+    if (viewOnly) throw new Error("This connection is view-only.");
     if (!newPaper?.source)
       throw new Error("Import a paper before providing the research brief.");
     try {
       await api.setBrief(newPaper.id, input);
-      setView("chat");
       await refresh();
+      setView("chat");
       if (input.agentMode === "pi")
         await api.sendMessage(newPaper.id, input.task, "followUp");
       else await api.plan(newPaper.id);
@@ -538,7 +556,8 @@ function AppShell({ api }: { api: AppAPI }) {
   };
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+      if (event.key === "Escape" && navOpen) { setNavOpen(false); return; }
+      if (!viewOnly && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
         event.preventDefault();
         setDraftId(null);
         setIntakeStage("paper");
@@ -562,7 +581,7 @@ function AppShell({ api }: { api: AppAPI }) {
           )[event.key],
         );
       }
-      if (event.key === "Escape" && active && run) {
+      if (!viewOnly && event.key === "Escape" && active && run) {
         event.preventDefault();
         void api
           .cancel(run.id)
@@ -572,12 +591,14 @@ function AppShell({ api }: { api: AppAPI }) {
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [api, active, run, refresh, showNew]);
+  }, [api, active, run, refresh, showNew, viewOnly, navOpen]);
   const hasPaper = !!paperRun?.source && view !== "settings";
   const splitPaper = hasPaper && paperOpen;
   return (
     <PaperContext.Provider value={paperNavigation}>
-      <div className="harness-app">
+      <div className={`harness-app${api.remote ? " collab-remote" : ""}${navOpen ? " is-nav-open" : ""}`}>
+        {navOpen && <button className="mobile-nav-backdrop" aria-label="Close workspace navigation" onClick={() => setNavOpen(false)} />}
+        {showCollab && api.collab && <CollabPanel api={api.collab} onClose={() => setShowCollab(false)} />}
         <aside className="vertical-rail" aria-label="Workspace navigation">
           <div className="rail-brand">
             <span className="brand-mark" aria-hidden="true" />
@@ -586,6 +607,7 @@ function AppShell({ api }: { api: AppAPI }) {
           <button
             className={`new-session-button${view === "new" ? " selected" : ""}`}
             type="button"
+            disabled={viewOnly}
             onClick={newExperiment}
           >
             ＋ New experiment <kbd>⌘N</kbd>
@@ -598,6 +620,7 @@ function AppShell({ api }: { api: AppAPI }) {
                 type="button"
                 className={`session-tab${item.id === selectedId && (view !== "new" || item.id === draftId) ? " selected" : ""}`}
                 onClick={() => {
+                  setNavOpen(false);
                   setSelectedId(item.id);
                   if (!item.input.task) {
                     setDraftId(item.id);
@@ -637,6 +660,7 @@ function AppShell({ api }: { api: AppAPI }) {
         </aside>
         <main className="main-surface">
           <header className="workspace-heading">
+            <button className="mobile-nav-toggle" aria-label="Workspace navigation" aria-expanded={navOpen} onClick={() => setNavOpen(value => !value)}>☰</button>
             {view === "settings" ? (
               <span className="header-location">Settings</span>
             ) : showNew ? (
@@ -695,6 +719,8 @@ function AppShell({ api }: { api: AppAPI }) {
               </nav>
             )}
             <div className="heading-actions">
+              {api.collab && <button className="collab-trigger" onClick={() => setShowCollab(true)}><PhoneGlyph /> Collab</button>}
+              {api.remote && <div className={`collab-connection is-${connection}`} role="status" title={connection === 'connected' ? `Live workspace · ${viewOnly ? 'view only' : 'control'}` : connection === 'expired' ? 'This connection link expired or was revoked. Open a new link from the desktop.' : 'Reconnecting to workspace…'}><span className={`session-dot${connection === 'connected' ? ' is-complete' : ''}`} /><span>{connection === 'connected' ? viewOnly ? 'View only' : 'Control' : connection === 'expired' ? 'Expired' : 'Reconnecting'}</span><button onClick={api.disconnect} aria-label="Disconnect from workspace" title="Disconnect">↗</button></div>}
               {showNew && !hasPaper ? (
                 <span className="header-state">
                   {newPaper?.status === "importing"
@@ -746,7 +772,7 @@ function AppShell({ api }: { api: AppAPI }) {
               <SettingsView
                 api={api}
                 snapshot={snapshot}
-                busy={operation}
+                busy={operation || viewOnly}
                 onSave={(settings: AppSettings) =>
                   perform(() => api.saveSettings(settings))
                 }
@@ -774,7 +800,7 @@ function AppShell({ api }: { api: AppAPI }) {
                       onImport={importPaper}
                       onStart={startResearch}
                       onReplace={newExperiment}
-                      disabled={!!snapshot?.activeId}
+                      disabled={viewOnly || !!snapshot?.activeId}
                     />
                   </div>
                 ) : null}
@@ -808,6 +834,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           </div>
                           <button
                             className="primary-button"
+                            disabled={viewOnly}
                             type="button"
                             onClick={() =>
                               void perform(() => api.approve(run.id))
@@ -841,7 +868,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           </span>
                           <button
                             type="button"
-                            disabled={active || operation}
+                            disabled={viewOnly || active || operation}
                             onClick={() =>
                               void perform(() => api.cleanup(run.id))
                             }
@@ -860,7 +887,7 @@ function AppShell({ api }: { api: AppAPI }) {
                               <span>{input.text}</span>
                               <button
                                 type="button"
-                                disabled={operation || otherActive}
+                                disabled={viewOnly || operation || otherActive}
                                 onClick={() =>
                                   void perform(() =>
                                     api.sendMessage(
@@ -895,7 +922,7 @@ function AppShell({ api }: { api: AppAPI }) {
                             onChange={(event) => setDraft(event.target.value)}
                             rows={2}
                             maxLength={30000}
-                            disabled={otherActive}
+                            disabled={viewOnly || otherActive}
                             onKeyDown={(event) => {
                               if (
                                 event.key === "Escape" &&
@@ -917,7 +944,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           />
                           <DictationControl
                             state={voice}
-                            disabled={otherActive || operation}
+                            disabled={viewOnly || otherActive || operation}
                             onStart={() => void voice.start()}
                             onStop={() => void voice.stop()}
                             onCancel={voice.cancel}
@@ -962,7 +989,7 @@ function AppShell({ api }: { api: AppAPI }) {
                                 <button
                                   className="stop-button"
                                   type="button"
-                                  disabled={operation}
+                                  disabled={viewOnly || operation}
                                   onClick={() =>
                                     void perform(() => api.cancel(run.id))
                                   }
@@ -979,7 +1006,7 @@ function AppShell({ api }: { api: AppAPI }) {
                               className="send-button"
                               type="submit"
                               disabled={
-                                !draft.trim() || operation || otherActive
+                                viewOnly || !draft.trim() || operation || otherActive
                               }
                               aria-label={
                                 active ? "Queue message" : "Send message"
@@ -996,7 +1023,7 @@ function AppShell({ api }: { api: AppAPI }) {
                           </span>
                           <button
                             type="button"
-                            disabled={active || operation}
+                            disabled={viewOnly || active || operation}
                             onClick={() =>
                               void perform(() =>
                                 run.spec
@@ -1045,7 +1072,7 @@ function AppShell({ api }: { api: AppAPI }) {
                             setView("chat");
                             textarea.current?.focus();
                           }}
-                          disabled={operation || !!snapshot?.activeId}
+                          disabled={viewOnly || operation || !!snapshot?.activeId}
                         />
                       </div>
                     ) : null}
@@ -1114,6 +1141,7 @@ function AppShell({ api }: { api: AppAPI }) {
                     }
                   >
                     <PaperPane
+                      api={api}
                       key={paperRun.id}
                       run={paperRun}
                       page={paperPage}
@@ -1138,6 +1166,7 @@ function AppShell({ api }: { api: AppAPI }) {
 
 export function App() {
   const api = getApi();
+  if (!api && ["http:", "https:"].includes(window.location.protocol)) return <CollabConnect>{remote => <AppShell api={remote} />}</CollabConnect>;
   return api ? (
     <AppShell api={api} />
   ) : (

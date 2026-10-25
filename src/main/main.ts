@@ -14,6 +14,10 @@ import type { UtilityProcess, IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdirSync } from "node:fs";
+import { startCollabServer } from "../collab/server.js";
+import { startTunnel } from "../collab/tunnel.js";
+import QRCode from "qrcode";
+import type { CollabStatus } from "../shared/types.js";
 
 app.setName("Methodiy AI");
 // Product identity may change; the existing research and Chromium profile must not.
@@ -41,6 +45,36 @@ const pending = new Map<
   number,
   { resolve: (value: unknown) => void; reject: (error: Error) => void }
 >();
+let collab: Awaited<ReturnType<typeof startCollabServer>> | undefined;
+let tunnel: Awaited<ReturnType<typeof startTunnel>> | undefined;
+let changingCollab = false;
+let collabController: AbortController | undefined;
+async function collabStatus(): Promise<CollabStatus> {
+  const status = collab?.status(tunnel?.alive() ? tunnel.url : undefined) ?? { running: false, links: [] };
+  return { ...status, tunnel: !!tunnel?.alive(), warning: tunnel && !tunnel.alive() ? 'HTTPS-туннель отключился. Перезапустите доступ.' : undefined,
+    qr: await Promise.all(status.links.map(async link => ({ control: await QRCode.toDataURL(link.control, { width: 256, margin: 2 }), view: await QRCode.toDataURL(link.view, { width: 256, margin: 2 }) }))) };
+}
+async function stopCollab(): Promise<void> {
+  collabController?.abort(); collabController = undefined;
+  tunnel?.close(); tunnel = undefined;
+  const previous = collab; collab = undefined;
+  await previous?.close();
+}
+async function startCollab(useTunnel = false): Promise<CollabStatus> {
+  if (quitting) throw new Error('Приложение закрывается');
+  if (changingCollab) throw new Error('Подождите завершения настройки доступа');
+  changingCollab = true;
+  try {
+    if (collab?.status().running) return await collabStatus();
+    if (collab) await stopCollab();
+    const controller = new AbortController(); collabController = controller;
+    collab = await startCollabServer({ rendererRoot: path.join(app.getAppPath(), 'dist', 'renderer'), port: process.env.PAPER2_COLLAB_PORT ? Number(process.env.PAPER2_COLLAB_PORT) : undefined, uploadRoot: path.join(app.getPath('temp'), 'paper2-uploads'), request, host: useTunnel ? '127.0.0.1' : '0.0.0.0' });
+    if (controller.signal.aborted) { await stopCollab(); controller.signal.throwIfAborted(); }
+    if (useTunnel) tunnel = await startTunnel(collab.port, app.getAppPath(), controller.signal);
+    return await collabStatus();
+  } catch (error) { await stopCollab(); throw error; }
+  finally { changingCollab = false; }
+}
 function request(method: string, ...args: unknown[]): Promise<unknown> {
   if (workerExited)
     return Promise.reject(
@@ -61,9 +95,10 @@ function checkSender(event: IpcMainInvokeEvent): void {
   )
     throw new Error("Недоверенный IPC sender");
 }
-app.on("second-instance", () => {
+app.on("second-instance", (_event, argv) => {
   window?.show();
   window?.focus();
+  if (argv.includes('--collab')) void startCollab(argv.includes('--collab-tunnel')).catch(error => dialog.showErrorBox('Collab', String(error)));
 });
 void app
   .whenReady()
@@ -131,10 +166,12 @@ void app
     worker.on("message", (message) => {
       if (message.kind === "event") {
         window?.webContents.send("p2e:event", message.event);
+        collab?.publish(message.event);
         return;
       }
       if (message.kind === "conversation") {
         window?.webContents.send("p2e:conversation", message.update);
+        collab?.publishConversation(message.update);
         return;
       }
       if (message.kind === "fatal") {
@@ -150,6 +187,7 @@ void app
     });
     worker.on("exit", (code) => {
       workerExited = true;
+      void stopCollab();
       for (const call of pending.values())
         call.reject(
           new Error(
@@ -210,6 +248,9 @@ void app
         "Доступ к микрофону запрещён macOS. Откройте Системные настройки → Конфиденциальность и безопасность → Микрофон, разрешите доступ Electron (npm start) или Methodiy AI и перезапустите приложение.",
       );
     });
+    ipcMain.handle('p2e:collab:status', event => { checkSender(event); return collabStatus(); });
+    ipcMain.handle('p2e:collab:start', (event, useTunnel) => { checkSender(event); if (useTunnel !== undefined && typeof useTunnel !== 'boolean') throw new Error('Некорректный режим доступа'); return startCollab(useTunnel); });
+    ipcMain.handle('p2e:collab:stop', async event => { checkSender(event); if (changingCollab) throw new Error('Подождите завершения настройки доступа'); await stopCollab(); });
     ipcMain.handle("p2e:openFolder", async (event, id) => {
       checkSender(event);
       const folder = await request("folder", id);
@@ -292,7 +333,8 @@ void app
     app.on("before-quit", (event) => {
       if (quitting) return;
       event.preventDefault();
-      void request("shutdown")
+      quitting = true;
+      void stopCollab().then(() => request("shutdown"))
         .catch((error) =>
           dialog.showErrorBox("Проверьте ресурсы", String(error)),
         )
@@ -303,6 +345,7 @@ void app
         });
     });
     app.on("window-all-closed", () => app.quit());
+    if (process.argv.includes('--collab')) void startCollab(process.argv.includes('--collab-tunnel')).catch(error => { if (!quitting) dialog.showErrorBox('Collab', String(error)); });
   })
   .catch((error) => {
     dialog.showErrorBox("Ошибка запуска", String(error));

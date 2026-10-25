@@ -225,12 +225,14 @@ export function SettingsView({ api, snapshot, busy, onSave, onRefresh }: Setting
           })}
         </div>
       </section>
+      {api.remote ? <div className="quiet-banner">Provider credentials are managed on the desktop. Configured models remain available here.</div> : (
       <PiLogin
         api={api}
         disabled={busy || locked}
         onConnected={(provider, model) => { updateField('piProvider', provider); updateField('piModel', model); }}
         onRefresh={onRefresh}
       />
+      )}
 
 
       <form className="card settings-form" onSubmit={handleSave}>

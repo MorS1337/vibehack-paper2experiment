@@ -14,6 +14,9 @@
     "build": "tsc --noEmit && node scripts/build.mjs && vite build",
     "start": "electron .",
     "dev": "npm run build && electron .",
+    "collab": "npm run build && electron . --collab",
+    "collab:tunnel": "npm run build && electron . --collab --collab-tunnel",
+    "collab:setup": "node scripts/install-cloudflared.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "smoke": "tsx scripts/smoke.ts"
@@ -26,6 +29,7 @@
     "dompurify": "^3.3.3",
     "katex": "^0.16.22",
     "pdfjs-dist": "5.4.624",
+    "qrcode": "1.5.4",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-markdown": "^10.1.0",
@@ -38,6 +42,7 @@
   },
   "devDependencies": {
     "@types/node": "24.10.0",
+    "@types/qrcode": "1.5.5",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "electron": "45.0.0",
