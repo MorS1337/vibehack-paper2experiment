@@ -1,12 +1,9 @@
-import { access, statfs } from 'node:fs/promises';
+import { statfs } from 'node:fs/promises';
 import os from 'node:os';
 import { checkJevStatus, chooseComputeTarget } from '../integrations/jev.js';
-import { SetupRequiredError } from '../shared/errors.js';
 import type { AppSettings, ComputeContext, ComputeTarget, ConnectionStatus, ExperimentInput, ExperimentSpec } from '../shared/types.js';
 import { executionEnv, runProcess } from './process.js';
-import { expandHome } from './ssh.js';
-import { resolveVastCredential, VastApiClient, VastApiError } from './vast-api.js';
-import { selectVastTargets, vastSearchBody } from './vast-offers.js';
+import { assertVastLaunchAllowed, VAST_UNAVAILABLE_REASON } from './vast-policy.js';
 
 export { LocalBackend } from './local.js';
 export { VastBackend } from './vast.js';
@@ -78,19 +75,6 @@ export function localSuitability(target: ComputeTarget, spec: ExperimentSpec): s
   return null;
 }
 
-async function vastCandidates(ctx: ComputeContext): Promise<ComputeTarget[]> {
-  const credential = await resolveVastCredential();
-  if (!credential) throw new SetupRequiredError('Vast не настроен: задайте VAST_API_KEY или ~/.config/vastai/vast_api_key (ключ не читается из настроек/рендерера)');
-  if (!(ctx.spec.limits.maxHourlyUSD > 0) || !(ctx.spec.limits.maxTotalUSD > 0)) {
-    throw new Error('Для Vast нужны положительные лимиты maxHourlyUSD и maxTotalUSD');
-  }
-  const client = new VastApiClient(credential.key);
-  const offers = await client.searchOffers(vastSearchBody(ctx.spec), { signal: ctx.signal, timeoutMs: 30_000 });
-  const targets = selectVastTargets(offers, ctx.spec);
-  return targets;
-}
-
-
 async function autoTarget(ctx: ComputeContext): Promise<ComputeTarget> {
   const candidates: ComputeTarget[] = [];
   let localReason: string | null = 'локальная машина недоступна';
@@ -103,17 +87,13 @@ async function autoTarget(ctx: ComputeContext): Promise<ComputeTarget> {
     localReason = String(error);
   }
 
-  if (ctx.spec.limits.maxHourlyUSD > 0 && ctx.spec.limits.maxTotalUSD > 0) {
-    const targets = await vastCandidates(ctx);
-    candidates.push(...targets.slice(0, candidates.length > 0 ? 5 : 6));
-  }
-  if (candidates.length === 0) throw new Error(`Автовыбор не нашёл подходящего варианта; локально: ${localReason ?? 'нет подходящего предложения Vast'}`);
+  if (candidates.length === 0) throw new Error(`Автовыбор не нашёл подходящего варианта; локально: ${localReason}; ${VAST_UNAVAILABLE_REASON}`);
   const selected = await chooseComputeTarget(candidates, ctx.spec, ctx.signal);
   await ctx.emit('compute', `Jev выбрал ${selected.target.id} (${selected.label}, confidence ${selected.confidence.toFixed(3)}, модель ${selected.model})`);
   return selected.target;
 }
 
-/** Selection is read-only: Vast offer search only; no instance is created until approval + prepare. */
+/** Only real Local candidates are available in this release; Auto still uses Jev's choice protocol. */
 export async function selectCompute(ctx: ComputeContext, mode: ExperimentInput['mode']): Promise<ComputeTarget> {
   if (mode === 'local') {
     const target = await localTarget();
@@ -122,46 +102,13 @@ export async function selectCompute(ctx: ComputeContext, mode: ExperimentInput['
     await ctx.emit('compute', `Выбрана локальная машина: ${target.cpuCores} CPU, ${target.ramGB} GiB RAM, свободно ${target.diskGB} GB`);
     return target;
   }
-  if (mode === 'vast') {
-    const targets = await vastCandidates(ctx);
-    if (targets.length === 0) throw new Error('Vast: ни одного предложения в пределах требований и бюджета');
-    const selected = await chooseComputeTarget(targets.slice(0, 6), ctx.spec, ctx.signal);
-    const target = selected.target;
-    await ctx.emit('compute', `Jev выбрал ${target.id} (${selected.label}, confidence ${selected.confidence.toFixed(3)}, модель ${selected.model})`);
-    await ctx.emit('compute', `Выбрано Vast-предложение ${target.offerId}: ${target.hourlyUSD}$/ч, резерв итога ${target.estimatedUSD}$ (до подтверждения инстанс не создаётся)`);
-    return target;
-  }
+  if (mode === 'vast') assertVastLaunchAllowed();
   const target = await autoTarget(ctx);
   await ctx.emit('compute', `Автовыбор: ${target.label}; ${target.hourlyUSD}$/ч, резерв итога ${target.estimatedUSD}$`);
   return target;
 }
 
-async function vastStatus(settings: AppSettings): Promise<ConnectionStatus> {
-  const credential = await resolveVastCredential().catch(error => {
-    return { error: error instanceof Error ? error.message : String(error) } as const;
-  });
-  if (!credential) return { component: 'vast', state: 'needs_setup', detail: 'Нет VAST_API_KEY и ~/.config/vastai/vast_api_key' };
-  if ('error' in credential) return { component: 'vast', state: 'error', detail: credential.error.slice(0, 400) };
-  if (!settings.sshKeyPath.trim()) {
-    return { component: 'vast', state: 'needs_setup', detail: `Ключ Vast найден (${credential.source}); SSH-ключ не настроен` };
-  }
-  if (!await access(expandHome(settings.sshKeyPath)).then(() => true, () => false)) {
-    return { component: 'vast', state: 'needs_setup', detail: `Ключ Vast найден (${credential.source}); файл SSH-ключа не найден: ${settings.sshKeyPath}` };
-  }
-  try {
-    const client = new VastApiClient(credential.key);
-    try {
-      await client.ping({ timeoutMs: 8000 });
-    } catch (error) {
-      if (!(error instanceof VastApiError) || error.status !== 404) throw error;
-    }
-    return { component: 'vast', state: 'ready', detail: `Ключ Vast принят (${credential.source}); SSH: ${settings.sshKeyPath}` };
-  } catch (error) {
-    return { component: 'vast', state: 'error', detail: (error instanceof Error ? error.message : String(error)).slice(0, 400) };
-  }
-}
-
-/** Returns the two compute providers; agent and voice statuses belong to their integrations. */
-export async function getComputeStatuses(settings: AppSettings): Promise<ConnectionStatus[]> {
-  return Promise.all([checkJevStatus(), vastStatus(settings)]);
+/** Vast is explicitly unavailable without reading credentials or contacting the provider. */
+export async function getComputeStatuses(_settings: AppSettings): Promise<ConnectionStatus[]> {
+  return [await checkJevStatus(), { component: 'vast', state: 'error', detail: VAST_UNAVAILABLE_REASON }];
 }

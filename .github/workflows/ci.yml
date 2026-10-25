@@ -46,7 +46,6 @@ jobs:
           python3 -c 'import ensurepip, sys, venv; assert sys.version_info >= (3, 10)'
           command -v tar
           command -v ps
-          if [[ "$RUNNER_OS" == Linux ]]; then command -v setsid; fi
           echo "PYTHON=$(command -v python3)" >> "$GITHUB_ENV"
       - name: Install locked dependencies
         run: npm ci 2>&1 | tee "$RUNNER_TEMP/paper2-ci/install.log"
@@ -54,15 +53,6 @@ jobs:
         run: npm run build 2>&1 | tee "$RUNNER_TEMP/paper2-ci/build.log"
       - name: Run node:test suite (real POSIX processes included)
         run: npm test 2>&1 | tee "$RUNNER_TEMP/paper2-ci/tests.log"
-      - name: Require Linux detached watchdog test to pass without skips
-        if: runner.os == 'Linux'
-        run: |
-          node --import tsx --test --test-reporter=tap \
-            --test-name-pattern='^detached remote launch polls absolute PID and independent watchdog KILLs a TERM-ignoring workload$' \
-            tests/vast-lifecycle.test.ts 2>&1 | tee "$RUNNER_TEMP/paper2-ci/watchdog.tap"
-          # Fail if the test was renamed, skipped, or silently stopped executing.
-          grep -Eq '^# pass 1$' "$RUNNER_TEMP/paper2-ci/watchdog.tap"
-          grep -Eq '^# skipped 0$' "$RUNNER_TEMP/paper2-ci/watchdog.tap"
       - name: Real Python smoke and scientific reproducibility
         env:
           PAPER2_SMOKE_DIAGNOSTICS: ${{ runner.temp }}/paper2-ci/smoke
@@ -78,6 +68,5 @@ jobs:
             ${{ runner.temp }}/paper2-ci/install.log
             ${{ runner.temp }}/paper2-ci/build.log
             ${{ runner.temp }}/paper2-ci/tests.log
-            ${{ runner.temp }}/paper2-ci/watchdog.tap
             ${{ runner.temp }}/paper2-ci/smoke.log
             ${{ runner.temp }}/paper2-ci/smoke/

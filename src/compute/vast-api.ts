@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { assertVastLaunchAllowed } from './vast-policy.js';
 
 export const VAST_API_BASE = 'https://console.vast.ai/api/v0';
 
@@ -33,9 +34,6 @@ export class VastApiError extends Error {
     this.name = 'VastApiError';
   }
 }
-
-/** A definitive provider rejection, unlike a lost or malformed create response. */
-export class VastCreateRejectedError extends VastApiError {}
 
 /** VAST_API_KEY wins; otherwise read the native CLI key file (never renderer/settings). */
 export async function resolveVastCredential(): Promise<VastCredential | null> {
@@ -170,27 +168,13 @@ export class VastApiClient {
     };
   }
 
-  async createInstance(offerId: number, body: Record<string, unknown>, options?: VastApiOptions): Promise<number> {
-    let result: { success?: boolean; new_contract?: unknown; msg?: string };
-    try {
-      result = await this.request<typeof result>('PUT', `/asks/${offerId}/`, body, options);
-    } catch (error) {
-      if (error instanceof VastApiError && [400, 401, 403, 404].includes(error.status)) {
-        throw new VastCreateRejectedError(error.status, error.message);
-      }
-      throw error;
-    }
-    if (result?.success === false && result.new_contract === undefined) {
-      throw new VastCreateRejectedError(200, `Vast: предложение не принято${result.msg ? `: ${result.msg}` : ''}`);
-    }
-    if (!result || result.success === false) throw new VastApiError(200, 'Vast: противоречивый ответ создания инстанса');
-    if (typeof result.new_contract !== 'number' || !Number.isSafeInteger(result.new_contract) || result.new_contract <= 0) {
-      throw new VastApiError(200, 'Vast: create instance не вернул new_contract');
-    }
-    return result.new_contract;
+  /** Paid provisioning is disabled by release policy, including direct API callers. */
+  async createInstance(_offerId: number, _body: Record<string, unknown>, _options?: VastApiOptions): Promise<number> {
+    assertVastLaunchAllowed();
   }
 
   async manageInstance(id: number, body: { state?: 'running' | 'stopped'; label?: string }, options?: VastApiOptions): Promise<void> {
+    if (body.state === 'running') assertVastLaunchAllowed();
     await this.request<unknown>('PUT', `/instances/${id}/`, body, options);
   }
 

@@ -8,18 +8,16 @@ request и вручную (`workflow_dispatch`). Два независимых j
 
 В каждом job:
 
-1. Проверяются Python `venv`/`ensurepip`, `ps` и `tar`; на Linux обязателен `setsid`.
+1. Проверяются Python `venv`/`ensurepip`, `ps` и `tar`.
 2. `npm run build` выполняет `tsc --noEmit` и собирает production main/preload/renderer.
 3. `npm test` запускает весь node:test suite, в том числе настоящие Python-процессы,
    потоки логов, отмену, дедлайны, TERM-resistant потомков, отсутствие отложенного
    вывода, архивы и проверки артефактов.
-4. На Ubuntu отдельно запускается Linux detached-watchdog regression. Проверяется
-   TAP-итог: **1 passed, 0 skipped**. Переименование/пропуск теста или отсутствие
-   `setsid` делают job красным. Это локальный Linux workload с настоящими `setsid`,
-   process groups, `/proc` и watchdog, без SSH и аренды Vast.
-5. `npm run smoke` выполняет реальный Python/venv через `LocalBackend` и проверки,
+4. `npm run smoke` выполняет реальный Python/venv через `LocalBackend` и проверки,
    описанные ниже. Ненулевой exit status проходит через `tee` благодаря `pipefail`;
    retries и `continue-on-error` не используются.
+5. Vast отключён release-policy: suite проверяет отсутствие billable requests,
+   честный unavailable-статус и возможность recovery/cleanup прежних ресурсов.
 
 ## Научная воспроизводимость smoke
 
@@ -55,7 +53,7 @@ Smoke берёт параметры из плана, записывает `confi
 ## Диагностика при ошибке
 
 Только при `failure()` CI загружает диагностический artifact со сроком хранения
-7 дней: вывод install/build/tests/watchdog/smoke и разрешённые файлы smoke-проектов.
+7 дней: вывод install/build/tests/smoke и разрешённые файлы smoke-проектов.
 `PAPER2_SMOKE_DIAGNOSTICS` включает копирование **только при ошибке smoke**:
 `plan.json`, `config.json`, `experiment.json`, `stdout.log`, `stderr.log`,
 `artifacts/{metrics.json,samples.csv,plot.svg}`. Копируются обычные файлы до 64 MiB.
@@ -72,7 +70,7 @@ Smoke берёт параметры из плана, записывает `confi
 | --- | --- | --- |
 | LocalBackend/Python, cancel/timeout, TERM-resistant потомки | Реальные процессы | Реальные процессы |
 | Сохранённая rerun command, другая cwd, пробелы в пути | Выполняется | Выполняется |
-| Detached Linux watchdog (`/proc`, `setsid`) | Единственный штатный skip: Linux-only | Обязательный pass, skip запрещён |
+| Vast release-policy: create/run запрещены, recovery доступен | Локальные проверки | Локальные проверки |
 | Production Electron main/preload/renderer | Собирается | Собирается |
 | Electron GUI и IPC end-to-end | Ручная проверка | Ручная проверка, нужен display |
 
@@ -81,8 +79,8 @@ Windows в матрицу не входит; POSIX-регрессии TERM-resis
 этим CI не заявляется.
 
 CI не выполняет inference Pi/Jev, запросы к настоящему Vast, аренду/удаление
-инстансов, загрузку arXiv или доступ к микрофону/Whisper. Vast lifecycle проверяется
-локальным HTTP-сервером/фикстурами; это не подтверждение настоящего SSH lifecycle.
+инстансов, загрузку arXiv или доступ к микрофону/Whisper. Vast остаётся явной
+заглушкой; recovery проверяется HTTP-фикстурами, а не настоящей арендой.
 
 Автоматический smoke не является Electron GUI smoke: он напрямую использует
 тот же `LocalBackend`, `Store` и verifier. Для ручного Electron smoke после
