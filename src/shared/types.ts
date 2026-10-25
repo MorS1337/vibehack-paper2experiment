@@ -252,7 +252,19 @@ export interface ArtifactPreview {
   text: string;
   mime: string;
 }
+export interface CollabStatus {
+  running: boolean; port?: number; expiresAt?: string;
+  links: { origin: string; control: string; view: string }[];
+  qr?: { control: string; view: string }[]; tunnel?: boolean; warning?: string;
+}
 export interface AppAPI {
+  remote?: boolean;
+  access?: 'control' | 'view';
+  connection?(listener: (state: 'connected' | 'reconnecting' | 'expired') => void): () => void;
+  disconnect?(): void;
+  collab?: { status(): Promise<CollabStatus>; start(tunnel?: boolean): Promise<CollabStatus>; stop(): Promise<void>; };
+  paperPdf?(id: string, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>>;
+  downloadArtifact?(id: string, artifactPath: string): Promise<void>;
   snapshot(): Promise<Snapshot>;
   create(input: ExperimentInput): Promise<ExperimentRun>;
   importPaper(source: string): Promise<ExperimentRun>;
