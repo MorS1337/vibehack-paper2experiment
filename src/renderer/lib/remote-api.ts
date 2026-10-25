@@ -109,6 +109,7 @@ export async function connectRemote(value: string): Promise<AppAPI> {
       let binary = "";
       for (const byte of new Uint8Array(audio)) binary += String.fromCharCode(byte);
       return rpc("transcribe", btoa(binary), requestId);
+
     },
     cancelTranscription: requestId => rpc("cancelTranscription", requestId),
     choose: async kind => {

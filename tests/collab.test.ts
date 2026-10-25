@@ -58,8 +58,8 @@ test('HTTP serves only renderer assets; authenticates reads, enforces view acces
     assert.match(session.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
     const rpc = (token: string, method: string, extra: Record<string, string> = {}) => fetch(`${origin}/api/rpc`, { method: 'POST', headers: { ...auth(token), 'Content-Type': 'application/json', ...extra }, body: JSON.stringify({ method, args: [] }) });
     assert.equal((await rpc(view, 'snapshot')).status, 200);
-    for (const method of ['create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'importPaper', 'setBrief', 'sendMessage']) assert.equal((await rpc(view, method)).status, 403, method);
-    for (const method of ['folder', 'shutdown', 'choose', 'collab:start', '__proto__', 'sourcePdfPath', 'piLogin', 'piLoginRespond', 'piLoginState', 'authLink']) assert.equal((await rpc(control, method)).status, 404, method);
+    for (const method of ['create', 'plan', 'savePlan', 'execute', 'approve', 'cancel', 'cleanup', 'saveSettings', 'transcribe', 'importPaper', 'setBrief', 'sendMessage', 'cancelTranscription']) assert.equal((await rpc(view, method)).status, 403, method);
+    for (const method of ['folder', 'shutdown', 'choose', 'collab:start', '__proto__', 'sourcePdfPath', 'piLogin', 'piLoginRespond', 'piLoginState', 'authLink', 'requestMicrophoneAccess']) assert.equal((await rpc(control, method)).status, 404, method);
     assert.equal((await rpc(control, 'create', { Origin: 'https://attacker.example' })).status, 403);
     assert.equal((await rpc(control, 'create')).status, 200);
     assert.deepEqual(calls.map(call => call.method), ['snapshot', 'create']);
@@ -124,11 +124,14 @@ test('browser adapter reads and controls the same RPC, reconnects and catches up
       const api = await connectRemote(control);
       assert.equal(api.access, 'control');
       assert.deepEqual((await api.snapshot()).runs, []);
+
       const paper = await api.paperPdf!('b48535d5-ab40-4bd7-b294-f0904db64532');
       assert.equal(Buffer.from(paper).toString(), '%PDF-1.7\npaper fixture');
       await assert.rejects(api.piLogin('provider', 'api_key'), /desktop/);
       const viewer = await connectRemote(view);
       await assert.rejects(viewer.cancel('run-1'), /только просмотр/);
+      await assert.rejects(viewer.requestMicrophoneAccess(), /view-only/);
+      await assert.rejects(viewer.cancelTranscription(requestId), /только просмотр/);
       const events: RunEvent[] = [], connections: string[] = [];
       const conversations: ConversationUpdate[] = [];
       const unConversation = api.onConversation(update => conversations.push(update));
