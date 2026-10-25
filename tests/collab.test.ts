@@ -131,7 +131,7 @@ test('browser adapter reads and controls the same RPC, reconnects and catches up
       const viewer = await connectRemote(view);
       await assert.rejects(viewer.cancel('run-1'), /только просмотр/);
       await assert.rejects(viewer.requestMicrophoneAccess(), /view-only/);
-      await assert.rejects(viewer.cancelTranscription(requestId), /только просмотр/);
+      await assert.rejects(viewer.cancelTranscription('b48535d5-ab40-4bd7-b294-f0904db64532'), /только просмотр/);
       const events: RunEvent[] = [], connections: string[] = [];
       const conversations: ConversationUpdate[] = [];
       const unConversation = api.onConversation(update => conversations.push(update));
