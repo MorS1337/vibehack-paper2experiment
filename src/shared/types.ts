@@ -24,7 +24,7 @@ export interface ExperimentRun {
   dir: string; source?: SourceDocument; spec?: ExperimentSpec; planVersion: number; target?: ComputeTarget;
   pid?: number; instanceId?: number; workerSessionId?: string; attempts: number;
   artifacts: Artifact[]; metrics?: Record<string, number>; verification?: string; report?: string; error?: string;
-  artifactsCollected?: boolean; cleanupRequired?: boolean; deadlineAt?: string; command?: string;
+  artifactsCollected?: boolean; cleanupRequired?: boolean; executionStarted?: boolean; deadlineAt?: string; command?: string;
 }
 export interface AppSettings { piProvider: string; piModel: string; openCodeModel: string; python: string; whisperBinary: string; whisperModel: string; sshKeyPath: string; }
 export interface ConnectionStatus { component: 'pi' | 'opencode' | 'jev' | 'vast' | 'whisper' | 'smartcompact'; state: 'ready' | 'needs_setup' | 'error'; detail: string; }
