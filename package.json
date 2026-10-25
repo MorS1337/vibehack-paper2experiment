@@ -1,0 +1,40 @@
+{
+  "name": "paper2experiment",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first desktop research harness",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/main/main.js",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs && vite build",
+    "start": "electron .",
+    "dev": "npm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@opencode-ai/sdk": "1.19.4",
+    "@sinclair/typebox": "0.34.41",
+    "@typesafe-ai/sdk": "0.7.0",
+    "opencode-ai": "1.19.4",
+    "pdfjs-dist": "5.4.624",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "smartcompact": "0.1.8",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "electron": "45.0.0",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "7.2.2"
+  }
+}
